@@ -7,6 +7,10 @@ export default defineConfig({
   base: './',
   plugins: [react()],
   build: {
+    // Pages publishes dist/ as-is: no source maps, no compressed-size report in
+    // the log. scripts/strip-public.mjs then removes the comments that survive.
+    sourcemap: false,
+    reportCompressedSize: false,
     rollupOptions: {
       output: {
         manualChunks(id) {

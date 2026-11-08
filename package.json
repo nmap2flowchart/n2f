@@ -7,11 +7,12 @@
   "description": "Static, GitHub Pages build of NMAP2Flowchart – nmap XML to an editable network diagram, entirely in the browser.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/strip-public.mjs",
     "preview": "vite preview",
     "lint": "oxlint",
     "sync": "node scripts/sync-from-app.mjs",
-    "sync:check": "node scripts/sync-from-app.mjs --check"
+    "sync:check": "node scripts/sync-from-app.mjs --check",
+    "strip:check": "node scripts/strip-public.mjs --check"
   },
   "dependencies": {
     "@xyflow/react": "^12.12.0",

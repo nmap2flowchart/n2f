@@ -28,9 +28,6 @@ import { buildRfGraph, type AppEdge, type AppNode } from './graph/buildRfGraph';
 import {
   createDocFromScan,
   emptyDoc,
-  importScanAsLayer,
-  mergeScanIntoDoc,
-  previewImport,
   type ImportMode,
 } from './doc/docFromScan';
 import { useDocHistory } from './doc/history';
@@ -76,14 +73,17 @@ import {
   type StackMode,
 } from './doc/operations';
 import { DesignOpenDialog, type DesignPreview } from './components/DesignOpenDialog';
+import { FileHubDialog, type ExportFormat, type FileHubTab } from './components/FileHubDialog';
+import { ImportPreviewBody } from './components/ImportPreview';
+import { SaveStatus } from './components/SaveStatus';
+import { useWorkspaceStore } from './hooks/useWorkspaceStore';
 import { ShareDialog } from './components/ShareDialog';
 import { PresenceChip } from './components/PresenceChip';
 import { SharedCursors } from './components/SharedCursors';
 import { useSharedSession } from './shared/useShared';
 import { shareTokenFromLocation, type SharedTarget } from './shared/live';
-import { DESIGN_EXTENSION, buildDesignFile, looksLikeJson, readDesignFile } from './doc/designFile';
-import { parseNmapXml } from './nmap/parseNmapXml';
-import { openPorts, discoveryOnly, type NmapScan } from './model/types';
+import type { ImportSuccess } from './nmap/runImport';
+import { openPorts } from './model/types';
 import {
   RISK_SCOPE_LABEL,
   nodeRisk,
@@ -91,25 +91,13 @@ import {
   normalizeRiskPolicy,
   resolveRiskPolicy,
   riskStats,
-  type RiskSummary,
 } from './doc/risk';
 import { RiskLevelsDialog } from './components/RiskLevelsDialog';
 import { RiskSummaryDialog } from './components/RiskSummaryDialog';
-import { toMermaid } from './export/mermaid';
-import { toDrawio } from './export/drawio';
-import { toSvg } from './export/svg';
-import { rasterize, svgToPdf, toBlob } from './export/raster';
-import {
-  riskReportRows,
-  toRiskCsv,
-  toRiskJson,
-  type RiskReportMeta,
-  type RiskReportScope,
-} from './export/riskReport';
+import { useExportFlow } from './hooks/useExportFlow';
+import { useImportFlow, type LayerBatch } from './hooks/useImportFlow';
 import { SAMPLE_FILE_NAME, SAMPLE_SCAN_XML } from './data/sampleScan';
 
-const STORAGE_KEY = 'nmap2flowchart.diagram.v2';
-const LEGACY_STORAGE_KEY = 'nmap2flowio.diagram.v2';
 const ONBOARDING_KEY = 'nmap2flowchart.onboardingDismissed';
 const LEGACY_ONBOARDING_KEY = 'nmap2flowio.onboardingDismissed';
 
@@ -120,36 +108,6 @@ const nodeTypes = {
   hop: HopNode,
   origin: OriginNode,
 };
-
-function download(name: string, content: string, mime: string) {
-  const url = URL.createObjectURL(new Blob([content], { type: `${mime};charset=utf-8` }));
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
-
-function downloadBlob(name: string, blob: Blob) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
-
-const EXPORT_DPI = 300;
-
-/** Browser storage, recovery and design files all use the same reader. */
-function readDoc(raw: string): DiagramDoc | null {
-  const result = readDesignFile(raw);
-  return result.ok ? result.doc : null;
-}
-
-function baseName(fileName: string) {
-  return fileName.replace(/\.[^.]+$/, '') || 'nmap-diagram';
-}
 
 /**
  * Nudges a new node off any card already sitting on that spot, so pressing the dock
@@ -177,15 +135,6 @@ function onboardingDismissed() {
   } catch {
     return false;
   }
-}
-
-function subnetCount(scan: NmapScan) {
-  const subnets = new Set<string>();
-  scan.hosts.forEach((host) => {
-    const match = /^(\d{1,3}\.){3}\d{1,3}$/.exec(host.ip);
-    if (match) subnets.add(host.ip.split('.').slice(0, 3).join('.') + '.0/24');
-  });
-  return subnets.size;
 }
 
 function Logo({ size = 38 }: { size?: number }) {
@@ -227,18 +176,6 @@ type MenuState =
 
 type MarqueeBox = { left: number; top: number; width: number; height: number };
 
-type ImportPreview = {
-  fileName: string;
-  scan: NmapScan;
-  mode: ImportMode;
-};
-
-const IMPORT_MODE_HINTS: Record<ImportMode, { label: string; hint: string }> = {
-  merge: { label: 'Merge', hint: 'Refresh matching hosts, add new ones, keep the rest' },
-  replace: { label: 'Replace', hint: 'Start over from this scan' },
-  layer: { label: 'New layer', hint: 'Add this scan beside the current diagram' },
-};
-
 /** A share link in the address bar turns this page into a joined room. */
 const SHARE_TOKEN = shareTokenFromLocation();
 
@@ -266,6 +203,12 @@ function Canvas() {
   const history = useDocHistory(null, { locked: shared.readOnly });
   const doc = history.doc;
 
+  // A room or a share link owns its own storage, so the browser copy switches off.
+  const { status: workspaceStatus, restore: restoreWorkspace } = useWorkspaceStore({
+    doc,
+    enabled: !sharedEnabled && !SHARE_TOKEN,
+  });
+
   // Level colours come from the diagram first, then the account, then the
   // server-configured default, then the built-in three tiers.
   const diagramRisk = useMemo(() => normalizeDiagramRisk(doc?.risk), [doc?.risk]);
@@ -286,8 +229,8 @@ function Canvas() {
   const [toastUndo, setToastUndo] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [moreMenu, setMoreMenu] = useState(false);
-  const [importMenu, setImportMenu] = useState(false);
-  const [exportMenu, setExportMenu] = useState(false);
+  const [fileHubOpen, setFileHubOpen] = useState(false);
+  const [fileHubTab, setFileHubTab] = useState<FileHubTab>('import');
   const [accountOpen, setAccountOpen] = useState(false);
   const [riskOpen, setRiskOpen] = useState(false);
   const [riskSummaryOpen, setRiskSummaryOpen] = useState(false);
@@ -303,9 +246,6 @@ function Canvas() {
   const [onboardingOpen, setOnboardingOpen] = useState(
     () => !onboardingDismissed(),
   );
-  const [importing, setImporting] = useState(false);
-  const [autosaveStatus, setAutosaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
-  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
   const [designPreview, setDesignPreview] = useState<DesignPreview | null>(null);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
@@ -359,10 +299,20 @@ function Canvas() {
     }, 5000);
   }, []);
 
+  const {
+    focusName,
+    exportScope,
+    exportDesign,
+    exportRiskReport,
+    exportMermaid,
+    exportDrawio,
+    exportSvgFile,
+    exportPngFile,
+    exportPdfFile,
+  } = useExportFlow({ doc, riskPolicy, riskScope, query, notify });
+
   const closeMenus = useCallback(() => {
     setMoreMenu(false);
-    setImportMenu(false);
-    setExportMenu(false);
     setGridMenu(false);
   }, []);
 
@@ -465,77 +415,34 @@ function Canvas() {
       }
       return;
     }
-    let raw: string | null = null;
-    try {
-      raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) {
-        const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
-        if (legacy) {
-          raw = legacy;
-          try {
-            localStorage.setItem(STORAGE_KEY, legacy);
-            localStorage.removeItem(LEGACY_STORAGE_KEY);
-          } catch {
-            // The legacy copy still restores here; the next autosave retries the new key.
-          }
-        }
-      }
-    } catch {
-      setAutosaveStatus('error');
-      notify('Browser storage is unavailable; open or save a workspace copy');
-      return;
-    }
-    if (!raw) {
-      try {
-        const recovery =
-          sessionStorage.getItem(`${STORAGE_KEY}.recovery`) ??
-          sessionStorage.getItem(`${LEGACY_STORAGE_KEY}.recovery`);
-        if (!recovery) return;
-        const saved = readDoc(recovery);
-        if (saved) {
-          history.reset(saved);
-          notify('Recovered workspace from this browser session');
-        }
-      } catch {
+    void (async () => {
+      const result = await restoreWorkspace();
+      if (result.kind === 'restored') {
+        history.reset(result.doc);
+        if (result.location === 'session') notify('Recovered the workspace from this browser session');
+        window.setTimeout(() => fitView({ padding: 0.16 }), 120);
+      } else if (result.kind === 'unavailable') {
         notify('Browser storage is unavailable; open or save a workspace copy');
       }
-      return;
-    }
-    const saved = readDoc(raw);
-    if (saved) {
-      history.reset(saved);
-      window.setTimeout(() => fitView({ padding: 0.16 }), 120);
-    }
-  }, [history, fitView, sharedReady, sharedEnabled, sharedIncoming, sharedKind, notify]);
+    })();
+  }, [
+    history,
+    fitView,
+    sharedReady,
+    sharedEnabled,
+    sharedIncoming,
+    sharedKind,
+    notify,
+    restoreWorkspace,
+  ]);
 
   useEffect(() => {
     if (!doc) return;
     if (sharedCanPublish) {
       // Everyone on the link sees this change; the room saves it server-side.
       publishShared(doc);
-      return;
     }
-    if (sharedEnabled || SHARE_TOKEN) {
-      // A room-backed page keeps no browser copy: a view link saves nothing, and
-      // the owner's own project saves through the account API below.
-      return;
-    }
-    setAutosaveStatus('saving');
-    const timer = window.setTimeout(() => {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 2, doc }));
-        setAutosaveStatus('saved');
-      } catch {
-        try {
-          sessionStorage.setItem(`${STORAGE_KEY}.recovery`, JSON.stringify({ version: 2, doc }));
-          setAutosaveStatus('error');
-        } catch {
-          setAutosaveStatus('error');
-        }
-      }
-    }, 700);
-    return () => window.clearTimeout(timer);
-  }, [doc, sharedEnabled, sharedCanPublish, publishShared]);
+  }, [doc, sharedCanPublish, publishShared]);
 
   // Remote changes land as a plain replacement: they are not this user's edit, so
   // they do not become an undo step, and they wait for a drag or a note to finish.
@@ -621,144 +528,104 @@ function Canvas() {
     };
   }, [marqueeActive]);
 
-  const handleScan = useCallback(
-    (scan: NmapScan, mode: ImportMode) => {
+  /**
+   * Applies an import that has already been parsed and laid out – in the worker,
+   * so this only updates the document and says what happened.
+   */  const applyImport = useCallback(
+    (result: ImportSuccess) => {
+      const { doc: next, mode, fileName, added, gone, layerId } = result;
+      const hosts = result.scan.hosts.length;
+
       if (!doc) {
-        loadDoc(createDocFromScan(scan), `${scan.fileName}: ${scan.hosts.length} hosts`);
+        loadDoc(next, `${fileName}: ${hosts} hosts`);
         return;
       }
 
-      if (mode === 'replace') {
-        const next = createDocFromScan(scan);
-        history.commit(next);
-        setSelection({ nodes: [], edges: [] });
-        setQuery('');
-        setActiveLayerId(next.layers[0]?.id ?? MAIN_LAYER);
-        notify(`Replaced with ${scan.fileName} · ${scan.hosts.length} hosts – undo restores the previous diagram`);
-        fitSoon();
-        return;
-      }
-
-      if (mode === 'layer') {
-        const { doc: layered, layerId, added } = importScanAsLayer(doc, scan);
-        history.commit(layered);
-        setActiveLayerId(layerId);
-        setSelection({ nodes: [], edges: [] });
-        setQuery('');
-        notify(`“${scan.fileName}” added as a new layer · ${added} nodes`);
-        fitSoon();
-        return;
-      }
-
-      const { doc: merged, added, gone } = mergeScanIntoDoc(doc, scan);
-      history.commit(merged);
+      history.commit(next);
       setSelection({ nodes: [], edges: [] });
       setQuery('');
-      notify(`${scan.fileName}: ${added} new, ${gone} missing, ${scan.hosts.length} hosts total – undo reverts the merge`);
+
+      if (mode === 'replace') {
+        setActiveLayerId(next.layers[0]?.id ?? MAIN_LAYER);
+        notify(`Replaced with ${fileName} · ${hosts} hosts – undo restores the previous diagram`);
+      } else if (mode === 'layer') {
+        if (layerId) setActiveLayerId(layerId);
+        notify(`“${fileName}” added as a new layer · ${added} nodes`);
+      } else {
+        notify(`${fileName}: ${added} new, ${gone} missing, ${hosts} hosts total – undo reverts the merge`);
+      }
       fitSoon();
     },
     [doc, history, loadDoc, notify, fitSoon],
   );
 
-  const handleText = useCallback(
-    (text: string, fileName: string, mode: ImportMode = 'merge') => {
-      if (looksLikeJson(text)) {
-        const result = readDesignFile(text);
-        if (!result.ok) {
-          notify(result.reason);
-          return false;
-        }
-        setDesignPreview({ fileName, design: result.design, doc: result.doc, repair: result.repair });
-        return true;
+  /**
+   * Several scans added as layers arrive as one document; this commits it and
+   * says how many files landed, including the ones that were not scans.
+   */
+  const applyLayerBatch = useCallback(
+    ({ doc: next, layerId, added, ok, failed, designFile }: LayerBatch) => {
+      if (added === 0) {
+        notify(
+          designFile
+            ? 'A design file replaces the whole diagram – open it from Import / Open → Open design file.'
+            : 'Those files are not nmap XML scans.',
+        );
+        return;
       }
-      try {
-        handleScan(parseNmapXml(text, fileName), mode);
-        return true;
-      } catch (error) {
-        notify((error as Error).message);
-        return false;
-      }
+      history.commit(next);
+      if (layerId) setActiveLayerId(layerId);
+      setSelection({ nodes: [], edges: [] });
+      setQuery('');
+      notify(`${ok} scan${ok === 1 ? '' : 's'} added as ${ok === 1 ? 'a layer' : 'layers'} · ${added} nodes`);
+      if (failed > 0) notify(`${failed} file${failed === 1 ? '' : 's'} could not be read`);
+      fitSoon();
     },
-    [handleScan, notify],
+    [history, notify, fitSoon],
+  );
+
+  const imports = useImportFlow({
+    doc,
+    apply: applyImport,
+    applyLayerBatch,
+    onDesign: setDesignPreview,
+    notify,
+  });
+
+  // A share link and a view-only room cannot import; everything else can.
+  const canImport = !SHARE_TOKEN && !shared.readOnly;
+
+  const openFileHub = useCallback((tab: FileHubTab) => {
+    setFileHubTab(tab);
+    setFileHubOpen(true);
+  }, []);
+
+  const exportFromHub = useCallback(
+    (format: ExportFormat) => {
+      closeMenus();
+      setFileHubOpen(false);
+      if (format === 'design') exportDesign();
+      else if (format === 'mermaid') exportMermaid();
+      else if (format === 'drawio') exportDrawio();
+      else if (format === 'svg') exportSvgFile();
+      else if (format === 'png') void exportPngFile();
+      else void exportPdfFile();
+    },
+    [closeMenus, exportDesign, exportDrawio, exportMermaid, exportPdfFile, exportPngFile, exportSvgFile],
   );
 
   const handleFiles = useCallback(
     async (files: FileList | File[]) => {
-      const list = Array.from(files);
-      if (list.length === 0) return;
-      setImporting(true);
-
       const mode = importMode.current;
       importMode.current = 'merge';
-
-      if (mode === 'layer' && doc) {
-        let next = doc;
-        let layerId: string | null = null;
-        let added = 0;
-        let failed = 0;
-        let designFile = false;
-        for (const file of list) {
-          try {
-            const text = await file.text();
-            designFile = looksLikeJson(text);
-            if (designFile) break;
-            const result = importScanAsLayer(next, parseNmapXml(text, file.name));
-            next = result.doc;
-            layerId = result.layerId;
-            added += result.added;
-          } catch {
-            failed += 1;
-          }
-        }
-        if (added === 0) {
-          notify(
-            designFile
-              ? 'A design file replaces the whole diagram – open it from Import / Open → Open design file.'
-              : 'Those files are not nmap XML scans.',
-          );
-          setImporting(false);
-          return;
-        }
-        history.commit(next);
-        if (layerId) setActiveLayerId(layerId);
-        setSelection({ nodes: [], edges: [] });
-        setQuery('');
-        const ok = list.length - failed;
-        notify(`${ok} scan${ok === 1 ? '' : 's'} added as ${ok === 1 ? 'a layer' : 'layers'} · ${added} nodes`);
-        fitSoon();
-        setImporting(false);
-        return;
-      }
-
-      const file = list[0];
-      if (list.length > 1) {
-        notify(`Importing ${file.name} only – choose “Add scan as new layer” for a batch`);
-      }
-      try {
-        const text = await file.text();
-        if (looksLikeJson(text)) {
-          handleText(text, file.name, mode);
-        } else {
-          setImportPreview({ fileName: file.name, scan: parseNmapXml(text, file.name), mode });
-        }
-      } catch (error) {
-        notify(`Could not read ${file.name}: ${(error as Error).message}`);
-      } finally {
-        setImporting(false);
-      }
+      await imports.importFiles(files, mode);
     },
-    [doc, handleText, history, notify, fitSoon],
+    [imports.importFiles],
   );
 
   const loadSample = useCallback(() => {
-    handleText(SAMPLE_SCAN_XML, SAMPLE_FILE_NAME, 'replace');
-  }, [handleText]);
-
-  const confirmImportPreview = useCallback(() => {
-    if (!importPreview) return;
-    handleScan(importPreview.scan, importPreview.mode);
-    setImportPreview(null);
-  }, [handleScan, importPreview]);
+    void imports.importText(SAMPLE_SCAN_XML, SAMPLE_FILE_NAME, 'replace');
+  }, [imports.importText]);
 
   const confirmDesign = useCallback(
     (applyRisk: boolean) => {
@@ -1338,90 +1205,6 @@ function Canvas() {
     [history],
   );
 
-  const exportMermaid = useCallback(() => {
-    if (!doc) return;
-    download(`${baseName(doc.fileName)}.mermaid.md`, `\`\`\`mermaid\n${toMermaid(doc, riskPolicy)}\`\`\`\n`, 'text/markdown');
-    notify('Mermaid flowchart exported');
-  }, [doc, notify, riskPolicy]);
-
-  const exportDrawio = useCallback(() => {
-    if (!doc) return;
-    download(`${baseName(doc.fileName)}.drawio`, toDrawio(doc, riskPolicy), 'application/xml');
-    notify('draw.io diagram exported');
-  }, [doc, notify, riskPolicy]);
-
-  const exportSvgFile = useCallback(() => {
-    if (!doc) return;
-    const { svg } = toSvg(doc, riskPolicy);
-    download(`${baseName(doc.fileName)}.svg`, svg, 'image/svg+xml');
-    notify('Vector SVG exported');
-  }, [doc, notify, riskPolicy]);
-
-  const exportPngFile = useCallback(async () => {
-    if (!doc) return;
-    try {
-      const { svg, width, height } = toSvg(doc, riskPolicy);
-      const raster = await rasterize(svg, width, height, EXPORT_DPI);
-      downloadBlob(`${baseName(doc.fileName)}.png`, await toBlob(raster.canvas, 'image/png'));
-      notify(`PNG exported · ${raster.width}×${raster.height} px (${Math.round(raster.scale * 96)} dpi)`);
-    } catch (error) {
-      notify(`PNG export failed: ${(error as Error).message}`);
-    }
-  }, [doc, notify, riskPolicy]);
-
-  const exportPdfFile = useCallback(async () => {
-    if (!doc) return;
-    try {
-      const { svg, width, height } = toSvg(doc, riskPolicy);
-      const pdf = await svgToPdf(svg, width, height, EXPORT_DPI);
-      downloadBlob(`${baseName(doc.fileName)}.pdf`, pdf);
-      notify(`PDF exported · ${Math.round((width * 72) / 96)}×${Math.round((height * 72) / 96)} pt page`);
-    } catch (error) {
-      notify(`PDF export failed: ${(error as Error).message}`);
-    }
-  }, [doc, notify, riskPolicy]);
-
-  /**
-   * The design file is the whole document, never the canvas scope: opening it
-   * elsewhere has to reproduce the diagram, not what is visible right now.
-   */
-  const exportDesign = useCallback(() => {
-    if (!doc) return;
-    const file = buildDesignFile(doc, { policy: riskPolicy, scope: riskScope });
-    download(`${baseName(doc.fileName)}${DESIGN_EXTENSION}`, JSON.stringify(file, null, 2), 'application/json');
-    notify(
-      file.risk
-        ? `Design exported · ${file.risk.policy.levels.length} risk levels from ${RISK_SCOPE_LABEL[riskScope]} included`
-        : 'Design exported – reopen it here or in another instance',
-    );
-  }, [doc, notify, riskPolicy, riskScope]);
-
-  const exportRiskReport = useCallback(
-    (format: 'csv' | 'json', summary: RiskSummary, scope: RiskReportScope, scopeNote: string) => {
-      if (!doc) return;
-      const meta: RiskReportMeta = {
-        diagram: doc.fileName,
-        scope,
-        scopeLabel: scopeNote,
-        policyScope: RISK_SCOPE_LABEL[riskScope],
-        generated: new Date().toISOString(),
-      };
-      const name = `${baseName(doc.fileName)}.risk-${scope === 'view' ? 'view' : 'diagram'}.${format}`;
-      if (format === 'json') {
-        download(name, toRiskJson(summary, meta), 'application/json');
-      } else {
-        download(name, toRiskCsv(summary, meta), 'text/csv');
-      }
-      const rows = riskReportRows(summary).length;
-      notify(
-        rows === 0
-          ? 'Risk report exported with no flagged rows'
-          : `Risk report exported · ${rows} flagged port${rows === 1 ? '' : 's'}`,
-      );
-    },
-    [doc, notify, riskScope],
-  );
-
   const openDesign = useCallback(() => {
     importMode.current = 'replace';
     fileInput.current?.click();
@@ -1580,24 +1363,6 @@ function Canvas() {
     };
   }, [doc, riskPolicy]);
 
-  const focusName = doc?.focusedLayerId ? layerMap(doc.layers).get(doc.focusedLayerId)?.name : null;
-
-  const importEffect = useMemo(
-    () => (importPreview ? previewImport(doc, importPreview.scan, importPreview.mode) : null),
-    [doc, importPreview],
-  );
-
-  const exportScope = useMemo(() => {
-    if (!doc) return '';
-    const layers = layerMap(doc.layers);
-    const hidden = doc.nodes.filter((node) => !isLayerVisible(layers, node.layerId, doc.focusedLayerId)).length;
-    const parts: string[] = [];
-    if (focusName) parts.push(`focused layer “${focusName}”`);
-    if (hidden > 0) parts.push(`${hidden} node${hidden === 1 ? '' : 's'} hidden`);
-    if (query.trim()) parts.push('canvas filter is not applied');
-    return parts.length > 0 ? `Export scope: ${parts.join(' · ')}` : 'Export scope: whole diagram';
-  }, [doc, focusName, query]);
-
   const graph = useMemo(
     () =>
       doc
@@ -1630,31 +1395,20 @@ function Canvas() {
   }, [graph, setNodes, setEdges]);
 
   const cloudProject = account.activeProject;
-  const saveTone = cloudProject
-    ? account.saveState === 'error'
-      ? 'error'
-      : account.saveState === 'saving'
-        ? 'saving'
-        : 'saved'
-    : autosaveStatus;
-  const saveLabel = cloudProject
-    ? account.saveState === 'error'
+  const accountTone =
+    account.saveState === 'error' ? 'error' : account.saveState === 'saving' ? 'saving' : 'saved';
+  const accountLabel =
+    account.saveState === 'error'
       ? 'Account save failed'
       : account.saveState === 'saving'
         ? 'Saving to account…'
-        : 'Saved to account'
-    : autosaveStatus === 'saving'
-      ? 'Saving…'
-      : autosaveStatus === 'error'
-        ? 'Storage unavailable'
-        : 'Saved locally';
-  const saveTitle = cloudProject
-    ? account.saveState === 'error' && account.error
+        : 'Saved to account';
+  const accountTitle =
+    account.saveState === 'error' && account.error
       ? account.error
-      : `“${cloudProject.name}” in your account · browser copy kept too`
-    : autosaveStatus === 'error'
-      ? 'Browser storage unavailable; download a workspace copy'
-      : undefined;
+      : cloudProject
+        ? `“${cloudProject.name}” in your account · browser copy kept too`
+        : undefined;
 
   return (
     <div
@@ -1738,64 +1492,12 @@ function Canvas() {
           )}
           {shared.live ? (
             <PresenceChip live={shared.live} users={shared.users} status={shared.status} />
+          ) : cloudProject ? (
+            <span className={`autosave-status autosave-status--${accountTone}`} role="status" title={accountTitle}>
+              {accountLabel}
+            </span>
           ) : (
-            doc && (
-              <span className={`autosave-status autosave-status--${saveTone}`} role="status" title={saveTitle}>
-                {saveLabel}
-              </span>
-            )
-          )}
-          {!SHARE_TOKEN && (
-          <div className="menu-wrap">
-            <button
-              type="button"
-              className="btn btn--outline workspace-open"
-              disabled={importing}
-              aria-expanded={importMenu}
-              onClick={() => setImportMenu((open) => !open)}
-            >
-              {importing ? 'Importing…' : 'Import / Open'}
-            </button>
-            {importMenu && (
-              <>
-                <div className="menu-backdrop" onClick={() => setImportMenu(false)} />
-                <div className="menu import-menu" role="menu">
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      closeMenus();
-                      importMode.current = 'merge';
-                      fileInput.current?.click();
-                    }}
-                  >
-                    Import Nmap XML…
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      closeMenus();
-                      openDesign();
-                    }}
-                  >
-                    Open design file (.json)…
-                  </button>
-                  <div className="menu__sep" />
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      closeMenus();
-                      loadSample();
-                    }}
-                  >
-                    Open sample scan
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
+            <SaveStatus status={workspaceStatus} visible={Boolean(doc)} />
           )}
           {!SHARE_TOKEN && (
             <button
@@ -2139,47 +1841,19 @@ function Canvas() {
           </div>
 
           <span className="topbar__divider" />
-          <div className="menu-wrap">
-            <button
-              type="button"
-              className="btn btn--accent"
-              disabled={!doc}
-              onClick={() => setExportMenu((open) => !open)}
-              aria-expanded={exportMenu}
-              aria-haspopup="menu"
-            >
-              Export
-            </button>
-            {exportMenu && (
-              <>
-                <div className="menu-backdrop" onClick={() => setExportMenu(false)} />
-                <div className="menu export-menu" role="menu">
-                  <p className="menu__note">{exportScope}</p>
-                  <div className="menu__sep" />
-                  <button type="button" role="menuitem" onClick={() => { setExportMenu(false); exportDesign(); }}>
-                    Design file (.json)
-                  </button>
-                  <div className="menu__sep" />
-                  <button type="button" role="menuitem" onClick={() => { setExportMenu(false); exportMermaid(); }}>
-                    Mermaid diagram
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => { setExportMenu(false); exportDrawio(); }}>
-                    draw.io diagram
-                  </button>
-                  <div className="menu__sep" />
-                  <button type="button" role="menuitem" onClick={() => { setExportMenu(false); exportSvgFile(); }}>
-                    SVG · vector print
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => { setExportMenu(false); void exportPngFile(); }}>
-                    PNG · 300 dpi
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => { setExportMenu(false); void exportPdfFile(); }}>
-                    PDF · plotter page
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
+          <button
+            type="button"
+            className="btn btn--accent"
+            disabled={imports.importing}
+            aria-haspopup="dialog"
+            aria-expanded={fileHubOpen}
+            onClick={() => {
+              // No diagram yet means the useful half of the panel is Import.
+              openFileHub(doc ? 'export' : 'import');
+            }}
+          >
+            {imports.importing ? 'Importing…' : canImport ? 'Import / Export' : 'Export'}
+          </button>
           <input
             ref={fileInput}
             type="file"
@@ -2625,11 +2299,15 @@ function Canvas() {
               </p>
               <pre>nmap -sV -sC --traceroute -oX scan.xml 10.0.0.0/24</pre>
               <div className="empty-state__actions">
-                <button type="button" className="btn btn--accent" onClick={() => fileInput.current?.click()}>
-                  Choose XML file
+                <button
+                  type="button"
+                  className="btn btn--accent"
+                  onClick={() => openFileHub('import')}
+                >
+                  Import or open…
                 </button>
-                <button type="button" className="btn" onClick={loadSample}>
-                  Open sample scan
+                <button type="button" className="btn btn--ghost" onClick={loadSample}>
+                  Sample scan
                 </button>
                 <button
                   type="button"
@@ -2709,10 +2387,14 @@ function Canvas() {
         </div>
       )}
 
-      {importPreview && (
-        <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) setImportPreview(null);
-        }}>
+      {imports.preview && !fileHubOpen && (
+        <div
+          className="dialog-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) imports.closePreview();
+          }}
+        >
           <section
             className="dialog import-preview"
             role="dialog"
@@ -2721,80 +2403,74 @@ function Canvas() {
             onKeyDown={(event) => {
               if (event.key === 'Escape') {
                 event.stopPropagation();
-                setImportPreview(null);
+                imports.closePreview();
               }
             }}
           >
             <div className="dialog__header">
               <div>
                 <span className="eyebrow">Import preview</span>
-                <h2 id="import-preview-title">{importPreview.fileName}</h2>
+                <h2 id="import-preview-title">{imports.preview.fileName}</h2>
               </div>
-              <button type="button" className="icon-button" aria-label="Close import preview" onClick={() => setImportPreview(null)}>×</button>
-            </div>
-            <div className="import-preview__grid">
-              <div><strong>{importPreview.scan.hosts.length}</strong><span>hosts</span></div>
-              <div><strong>{subnetCount(importPreview.scan)}</strong><span>subnets</span></div>
-              <div>
-                <strong>{importPreview.scan.hosts.reduce((count, host) => count + openPorts(host).length, 0)}</strong>
-                <span>open ports</span>
-              </div>
-              <div><strong>{importPreview.scan.trace?.length ?? importPreview.scan.hosts.reduce((count, host) => count + host.hops.length, 0)}</strong><span>trace hops</span></div>
-            </div>
-            <div className="import-preview__modes" role="radiogroup" aria-label="Import mode">
-              {(Object.keys(IMPORT_MODE_HINTS) as ImportMode[]).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  role="radio"
-                  aria-checked={importPreview.mode === mode}
-                  className={`import-mode${importPreview.mode === mode ? ' is-on' : ''}`}
-                  onClick={() => setImportPreview({ ...importPreview, mode })}
-                >
-                  <strong>{IMPORT_MODE_HINTS[mode].label}</strong>
-                  <span>{IMPORT_MODE_HINTS[mode].hint}</span>
-                </button>
-              ))}
-            </div>
-            {importEffect && (
-              <p className={`import-preview__effect${importPreview.mode === 'replace' && doc ? ' is-warning' : ''}`}>
-                {importPreview.mode === 'merge'
-                  ? `${importEffect.added} new node${importEffect.added === 1 ? '' : 's'} · ${importEffect.matched} refreshed${
-                      importEffect.stale > 0 ? ` · ${importEffect.stale} kept as stale` : ''
-                    }`
-                  : importPreview.mode === 'layer'
-                    ? `${importEffect.nodes} nodes on a new layer · the current diagram is untouched`
-                    : doc
-                      ? 'Replaces the open diagram – undo restores it'
-                      : 'Starts a new diagram from this scan'}
-              </p>
-            )}
-            <dl className="import-preview__metadata">
-              <div><dt>Command</dt><dd>{importPreview.scan.args || 'Not reported'}</dd></div>
-              <div><dt>Nmap version</dt><dd>{importPreview.scan.version || 'Not reported'}</dd></div>
-              <div><dt>Started</dt><dd>{importPreview.scan.startedAt || 'Not reported'}</dd></div>
-              <div><dt>Elapsed</dt><dd>{importPreview.scan.elapsedSeconds != null ? `${importPreview.scan.elapsedSeconds}s` : 'Not reported'}</dd></div>
-              <div>
-                <dt>Discovery only</dt>
-                <dd>{importPreview.scan.hosts.filter((host) => discoveryOnly(host)).length} hosts without a port scan</dd>
-              </div>
-            </dl>
-            <div className="dialog__actions">
-              <button type="button" className="btn" autoFocus onClick={() => setImportPreview(null)}>Cancel</button>
-              <button type="button" className="btn btn--accent" onClick={confirmImportPreview}>
-                {!doc
-                  ? 'Import scan'
-                  : importPreview.mode === 'replace'
-                    ? 'Replace diagram'
-                    : importPreview.mode === 'layer'
-                      ? 'Add as layer'
-                      : 'Merge scan'}
+              <button
+                type="button"
+                className="icon-button"
+                aria-label="Close import preview"
+                onClick={() => imports.closePreview()}
+              >
+                ×
               </button>
             </div>
+            <ImportPreviewBody
+              preview={imports.preview}
+              effect={imports.previewEffect}
+              hasDiagram={Boolean(doc)}
+              onChooseMode={imports.chooseMode}
+              onCancel={imports.closePreview}
+              onConfirm={imports.confirmPreview}
+            />
           </section>
         </div>
       )}
 
+      <FileHubDialog
+        open={fileHubOpen}
+        tab={fileHubTab}
+        onTabChange={setFileHubTab}
+        hasDiagram={Boolean(doc)}
+        canImport={canImport}
+        preview={imports.preview}
+        effect={imports.previewEffect}
+        importing={imports.importing}
+        exportScope={exportScope}
+        onClose={() => {
+          setFileHubOpen(false);
+          // Dropping the panel must not leave a pending import behind, or the
+          // standalone preview would pop up in its place.
+          imports.closePreview();
+        }}
+        onCancelReview={imports.closePreview}
+        onChooseScan={() => {
+          importMode.current = doc ? 'merge' : 'replace';
+          fileInput.current?.click();
+        }}
+        onChooseLayers={() => {
+          importMode.current = 'layer';
+          fileInput.current?.click();
+        }}
+        onChooseDesign={openDesign}
+        onBlank={() => {
+          setFileHubOpen(false);
+          loadDoc(emptyDoc(), 'Blank diagram – use the Add dock to create nodes');
+        }}
+        onSample={() => {
+          setFileHubOpen(false);
+          loadSample();
+        }}
+        onChooseMode={imports.chooseMode}
+        onConfirm={imports.confirmPreview}
+        onExport={exportFromHub}
+      />
       {designPreview && (
         <DesignOpenDialog
           preview={designPreview}

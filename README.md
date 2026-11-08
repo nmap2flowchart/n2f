@@ -19,7 +19,7 @@ Everything happens in the browser – the scan and the diagram never leave the m
 npm ci
 npm run dev      # http://localhost:5173
 npm run lint     # oxlint
-npm run build    # tsc -b && vite build -> dist/
+npm run build    # tsc -b && vite build, then trims the comments out of dist/
 npm run preview  # serve dist/ the way Pages will
 ```
 

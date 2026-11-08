@@ -1,4 +1,5 @@
-import { edgeLine, isLayerVisible, layerMap, nodeTitle, type DiagramDoc, type DiagramNode } from '../doc/types';
+import { edgeLine, nodeTitle, type DiagramDoc, type DiagramNode } from '../doc/types';
+import { buildScene } from '../graph/scene';
 import { iconEmoji } from '../icons/registry';
 import { openPorts, portSummaryOr } from '../model/types';
 import { hexToRgba, nodeRisk, type RiskPolicy } from '../doc/risk';
@@ -24,9 +25,10 @@ function labelFor(node: DiagramNode): string {
 }
 
 export function toMermaid(doc: DiagramDoc, riskPolicy: RiskPolicy): string {
-  const layers = layerMap(doc.layers);
-  const visible = doc.nodes.filter((node) => isLayerVisible(layers, node.layerId, doc.focusedLayerId));
-  const visibleIds = new Set(visible.map((node) => node.id));
+  const scene = buildScene(doc, riskPolicy);
+  // Document order keeps the generated flowchart reading like the scan it came from.
+  const visible = doc.nodes.filter((node) => scene.ids.has(node.id));
+  const visibleIds = scene.ids;
   const sections = visible.filter((node) => node.kind === 'section');
   const lines: string[] = ['flowchart LR'];
 
