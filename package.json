@@ -1,0 +1,31 @@
+{
+  "name": "nmap2flowchart-static",
+  "productName": "NMAP2Flowchart",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Static, GitHub Pages build of NMAP2Flowchart – nmap XML to an editable network diagram, entirely in the browser.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "lint": "oxlint",
+    "sync": "node scripts/sync-from-app.mjs",
+    "sync:check": "node scripts/sync-from-app.mjs --check"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.12.0",
+    "fast-xml-parser": "^5.11.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "oxlint": "^1.89.0",
+    "typescript": "~7.0.2",
+    "vite": "^8.3.5"
+  }
+}

@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+
+    <title>NMAP2Flowchart – nmap scan to network diagram, free in your browser</title>
+    <meta
+      name="description"
+      content="Turn nmap -oX output into an editable network diagram of subnets, hosts, ports and traceroute hops. Export to draw.io, Mermaid, SVG, PNG or PDF – free, and nothing is uploaded."
+    />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1" />
+    <meta name="author" content="NMAP2Flowchart" />
+
+    <!-- The canonical URL is repeated in sitemap.xml, robots.txt and the JSON-LD
+         block below. Change all four together if the site moves to its own domain. -->
+    <link rel="canonical" href="https://nmap2flowchart.4n6post.com/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="NMAP2Flowchart" />
+    <meta property="og:title" content="NMAP2Flowchart – nmap scan to editable network diagram" />
+    <meta
+      property="og:description"
+      content="Drop in nmap -oX XML and get a zoomable map of subnets, hosts, open ports and hops. Reshape it, then export to draw.io, Mermaid, SVG, PNG or PDF. Runs entirely in your browser."
+    />
+    <meta property="og:url" content="https://nmap2flowchart.4n6post.com/" />
+    <meta property="og:image" content="https://nmap2flowchart.4n6post.com/og-image.png" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="The NMAP2Flowchart canvas showing a nmap scan as host cards grouped into subnet sections."
+    />
+    <meta property="og:locale" content="en_US" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="NMAP2Flowchart – nmap scan to editable network diagram" />
+    <meta
+      name="twitter:description"
+      content="nmap -oX XML in, editable network diagram out. draw.io, Mermaid, SVG, PNG and PDF exports. Free, client-side, no upload."
+    />
+    <meta name="twitter:image" content="https://nmap2flowchart.4n6post.com/og-image.png" />
+
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <link rel="manifest" href="./site.webmanifest" />
+    <meta name="theme-color" content="#0b1118" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "NMAP2Flowchart",
+        "url": "https://nmap2flowchart.4n6post.com/",
+        "description": "Turn nmap -oX output into an editable network diagram of subnets, hosts, ports and traceroute hops, then export it to draw.io, Mermaid, SVG, PNG or PDF.",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Windows, macOS, Linux, ChromeOS, Android, iOS",
+        "browserRequirements": "Requires JavaScript and a modern browser",
+        "isAccessibleForFree": true,
+        "license": "https://github.com/Jonesckevin/NMAP2Flowchart/blob/main/LICENSE",
+        "screenshot": "https://nmap2flowchart.4n6post.com/og-image.png",
+        "softwareVersion": "static",
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "featureList": [
+          "Import nmap XML (-oX) from ping sweeps, port scans, service detection and NSE scripts",
+          "Automatic diagram of subnets, host cards, open ports and traceroute hops",
+          "Layers, sections, notes, icons, accents and hand-drawn connections",
+          "Risk level colouring and a risk summary",
+          "Export to draw.io, Mermaid, SVG, PNG, PDF and a reopenable design file"
+        ],
+        "sameAs": ["https://github.com/Jonesckevin/NMAP2Flowchart"]
+      }
+    </script>
+
+    <!-- Shell styling: enough to render the crawlable introduction before the
+         app bundle (which owns the real look) has finished downloading. -->
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #080b10;
+        color: #dbe6f2;
+        font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      }
+      .seo-shell {
+        max-width: 46rem;
+        margin: 0 auto;
+        padding: 3.5rem 1.25rem 4rem;
+        line-height: 1.55;
+      }
+      .seo-shell h1 {
+        margin: 0 0 0.75rem;
+        font-size: clamp(1.5rem, 4vw, 2.1rem);
+        line-height: 1.2;
+        letter-spacing: -0.02em;
+        color: #f2f7fc;
+      }
+      .seo-shell p {
+        margin: 0 0 1rem;
+        color: #b3c2d3;
+      }
+      .seo-shell code {
+        padding: 0.08em 0.35em;
+        border-radius: 4px;
+        background: #141c26;
+        color: #63fbd0;
+        font-size: 0.92em;
+      }
+      .seo-shell ul {
+        margin: 0 0 1.25rem;
+        padding-left: 1.15rem;
+        color: #b3c2d3;
+      }
+      .seo-shell li {
+        margin-bottom: 0.35rem;
+      }
+      .seo-shell a {
+        color: #63fbd0;
+      }
+      .seo-shell__status {
+        display: inline-block;
+        margin-bottom: 1.5rem;
+        padding: 0.25rem 0.6rem;
+        border: 1px solid #1e2c3c;
+        border-radius: 999px;
+        color: #7f93a8;
+        font-size: 0.78rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+    </style>
+
+    <!-- Analytics: put your GA4 measurement ID ("G-…") in public/config.js.
+         With the shipped empty value nothing is requested and nothing is stored. -->
+    <script src="./config.js"></script>
+    <script type="module" src="./src/main.tsx"></script>
+  </head>
+  <body>
+    <div id="root">
+      <main class="seo-shell">
+        <p class="seo-shell__status">Loading the diagram editor…</p>
+        <h1>NMAP2Flowchart – turn nmap scans into editable network diagrams</h1>
+        <p>
+          Drop in <code>nmap -oX</code> XML and get a zoomable, grid-backed canvas of subnets, hosts,
+          open ports and traceroute hops. Reshape it with layers, sections, notes, icons and hand-drawn
+          connections, then export it to draw.io, Mermaid, or print-ready SVG, PNG and PDF.
+        </p>
+        <ul>
+          <li>Any <code>-oX</code> output: ping sweeps, port scans, service and version detection, NSE scripts.</li>
+          <li>Subnets become sections, hosts become cards, and discovery-only scans stay honest – no invented ports.</li>
+          <li>Risk levels colour the diagram and add up in a summary you can hand to a reviewer.</li>
+          <li>Everything runs in your browser: the scan is never uploaded anywhere.</li>
+        </ul>
+        <p>
+          Learn more on
+          <a href="https://github.com/Jonesckevin/NMAP2Flowchart">GitHub</a> – or press
+          <strong>Open sample scan</strong> once the editor loads to see a finished diagram.
+        </p>
+        <noscript>
+          <p>
+            The editor itself needs JavaScript. You can still read the project on
+            <a href="https://github.com/Jonesckevin/NMAP2Flowchart">GitHub</a>.
+          </p>
+        </noscript>
+      </main>
+    </div>
+  </body>
+</html>

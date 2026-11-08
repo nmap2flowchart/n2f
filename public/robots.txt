@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://nmap2flowchart.4n6post.com/sitemap.xml

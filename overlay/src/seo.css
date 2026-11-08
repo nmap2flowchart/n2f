@@ -1,0 +1,20 @@
+/* Static-edition additions that the upstream stylesheet does not need.
+   The brand line is the page's <h1> (applied by scripts/sync-from-app.mjs), so it
+   takes the typography that `.brand__text strong` gave it. */
+.brand__title {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+}
+
+/* The empty state is the <h2> under that <h1>; keep the original <h1> look. */
+.empty-state__title {
+  margin: 4px 0 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
