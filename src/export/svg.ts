@@ -8,6 +8,7 @@ import { HOP_H } from '../graph/layout';
 import { iconById } from '../icons/registry';
 import { openPorts } from '../model/types';
 import { hexToRgba, levelForPort, type RiskPolicy } from '../doc/risk';
+import { escapeXml } from './text';
 
 
 export type SvgExport = { svg: string; width: number; height: number };
@@ -44,8 +45,7 @@ const INK = {
 const SANS = "'Inter', 'Segoe UI', Helvetica, Arial, sans-serif";
 const MONO = "'JetBrains Mono', Consolas, 'Courier New', monospace";
 
-const esc = (value: string) =>
-  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const esc = escapeXml;
 
 const round = (value: number) => Math.round(value * 100) / 100;
 

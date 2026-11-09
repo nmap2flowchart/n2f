@@ -6,6 +6,7 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  ViewportPortal,
   useEdgesState,
   useNodesState,
   useReactFlow,
@@ -14,10 +15,11 @@ import {
 } from '@xyflow/react';
 
 import { HostNode, HopNode, NoteNode, OriginNode, SectionNode } from './components/nodes';
-import { Inspector } from './components/Inspector';
+import { alignmentGuides, type Guide } from './graph/guides';import { Inspector } from './components/Inspector';
 import { LayerPanel } from './components/LayerPanel';
 import { SelectionToolbar } from './components/SelectionToolbar';
 import { ContextMenu, type MenuEntry } from './components/ContextMenu';
+import { CommandPalette, type Command } from './components/CommandPalette';
 import { HoverCard } from './components/HoverCard';
 import { HelpButton } from './components/HelpPanel';
 import { AccountButton } from './components/AccountButton';
@@ -100,6 +102,21 @@ import { SAMPLE_FILE_NAME, SAMPLE_SCAN_XML } from './data/sampleScan';
 
 const ONBOARDING_KEY = 'nmap2flowchart.onboardingDismissed';
 const LEGACY_ONBOARDING_KEY = 'nmap2flowio.onboardingDismissed';
+/** Canvas surface preference: dark for editing, light to match the exported page. */
+const CANVAS_THEME_KEY = 'nmap2flowchart.canvasTheme';
+/** Accent presets, cycled by clicking the logo. Green is the house colour. */
+const ACCENT_KEY = 'nmap2flowchart.accent';
+const ACCENTS = ['green', 'orange', 'purple'] as const;
+type Accent = (typeof ACCENTS)[number];
+
+const readAccent = (): Accent => {
+  try {
+    const stored = window.localStorage.getItem(ACCENT_KEY);
+    return ACCENTS.includes(stored as Accent) ? (stored as Accent) : 'green';
+  } catch {
+    return 'green';
+  }
+};
 
 const nodeTypes = {
   host: HostNode,
@@ -238,6 +255,8 @@ function Canvas() {
   const [dropLayerId, setDropLayerId] = useState<string | null>(null);
   const [dropSectionId, setDropSectionId] = useState<string | null>(null);
   const [nodeDragging, setNodeDragging] = useState(false);
+  const [guides, setGuides] = useState<Guide[]>([]);
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const [linkSource, setLinkSource] = useState<string | null>(null);
   const [editingNote, setEditingNote] = useState<string | null>(null);
   const [hoverCard, setHoverCard] = useState<{ id: string; rect: { left: number; top: number; right: number; bottom: number } } | null>(null);
@@ -251,6 +270,38 @@ function Canvas() {
   const [legendOpen, setLegendOpen] = useState(false);
   const [onlyMatches, setOnlyMatches] = useState(false);
   const [snapSize, setSnapSize] = useState(16);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    try {
+      return window.localStorage.getItem(CANVAS_THEME_KEY) === 'light' ? 'light' : 'dark';
+    } catch {
+      return 'dark';
+    }
+  });
+
+  useEffect(() => {
+    // `data-theme` on <html> so portals (dialogs, menus, toasts) inherit the theme.
+    document.documentElement.dataset.theme = theme;
+    try {
+      window.localStorage.setItem(CANVAS_THEME_KEY, theme);
+    } catch {
+      // The theme is a preference, not state the diagram depends on.
+    }
+  }, [theme]);
+
+  const [accent, setAccent] = useState<Accent>(readAccent);
+
+  useEffect(() => {
+    document.documentElement.dataset.accent = accent;
+    try {
+      window.localStorage.setItem(ACCENT_KEY, accent);
+    } catch {
+      // Same as the theme: a preference, nothing to recover.
+    }
+  }, [accent]);
+
+  const cycleAccent = useCallback(() => {
+    setAccent((current) => ACCENTS[(ACCENTS.indexOf(current) + 1) % ACCENTS.length]);
+  }, []);
   const [gridMenu, setGridMenu] = useState(false);
   const [shareProjectId, setShareProjectId] = useState<string | null>(null);
   // The project the share dialog belongs to – kept by id so the dialog follows the
@@ -280,7 +331,7 @@ function Canvas() {
   const marqueeClickGuard = useRef(false);
   const recentDowns = useRef<{ at: number; nodeId: string | null }[]>([]);
   const hoverTimer = useRef<number | undefined>(undefined);
-  const { fitView, screenToFlowPosition } = useReactFlow();
+  const { fitView, screenToFlowPosition, getZoom } = useReactFlow();
 
   const notify = useCallback((message: string) => {
     setToastUndo(false);
@@ -744,6 +795,118 @@ function Canvas() {
     [doc, selection.nodes, centerPoint, loadDoc, addNodeAt],
   );
 
+  const commands = useMemo<Command[]>(() => {
+    const list: Command[] = [
+      {
+        id: 'import',
+        group: 'File',
+        label: 'Import or open…',
+        hint: 'nmap XML, design file, blank canvas',
+        run: () => openFileHub('import'),
+      },
+      {
+        id: 'export',
+        group: 'File',
+        label: 'Export this diagram…',
+        hint: 'Mermaid, draw.io, SVG, PNG, PDF',
+        run: () => openFileHub('export'),
+        disabled: !doc,
+      },
+      {
+        id: 'save-copy',
+        group: 'File',
+        label: 'Download a design file',
+        hint: '.nmap2flowchart.json',
+        run: exportDesign,
+        disabled: !doc,
+      },
+      {
+        id: 'fit',
+        group: 'View',
+        label: 'Fit to diagram',
+        run: () => fitView({ padding: 0.16, duration: 320 }),
+        disabled: !doc,
+      },
+      {
+        id: 'snap',
+        group: 'View',
+        label: snapSize ? 'Turn off grid snap' : 'Snap to a 16 px grid',
+        run: () => setSnapSize(snapSize ? 0 : 16),
+      },
+      {
+        id: 'legend',
+        group: 'View',
+        label: legendOpen ? 'Hide the legend' : 'Show the legend',
+        run: () => setLegendOpen((open) => !open),
+        disabled: !doc,
+      },
+      {
+        id: 'undo',
+        group: 'Edit',
+        label: 'Undo',
+        shortcut: 'Ctrl Z',
+        run: history.undo,
+        disabled: !history.canUndo,
+      },
+      {
+        id: 'redo',
+        group: 'Edit',
+        label: 'Redo',
+        shortcut: 'Ctrl Y',
+        run: history.redo,
+        disabled: !history.canRedo,
+      },
+      {
+        id: 'accent',
+        group: 'View',
+        label: `Switch accent colour (${accent})`,
+        hint: 'green → orange → purple',
+        run: cycleAccent,
+      },
+      {
+        id: 'add-host',
+        group: 'Add',
+        label: 'Add a host',
+        run: () => handleAddNode('host'),
+      },
+      { id: 'add-hop', group: 'Add', label: 'Add a traceroute hop', run: () => handleAddNode('hop') },
+      { id: 'add-section', group: 'Add', label: 'Add a section', run: () => handleAddNode('section') },
+      { id: 'add-note', group: 'Add', label: 'Add a note', run: () => handleAddNode('note') },
+      {
+        id: 'risk',
+        group: 'Review',
+        label: 'Open the risk summary',
+        run: () => setRiskSummaryOpen(true),
+        disabled: !doc,
+      },
+    ];
+
+    for (const layer of doc?.layers ?? []) {
+      const focused = doc?.focusedLayerId === layer.id;
+      list.push({
+        id: `focus-${layer.id}`,
+        group: 'Layers',
+        label: focused ? `Stop focusing “${layer.name}”` : `Focus layer “${layer.name}”`,
+        run: () =>
+          history.commit((current) =>
+            setFocusedLayer(current, current.focusedLayerId === layer.id ? null : layer.id),
+          ),
+      });
+    }
+
+    return list;
+  }, [accent, cycleAccent, doc, exportDesign, fitView, handleAddNode, history, legendOpen, openFileHub, snapSize]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'k') return;
+      event.preventDefault();
+      setPaletteOpen((open) => !open);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const handleCanvasDoubleClick = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
       const target = event.target as HTMLElement;
@@ -1047,6 +1210,7 @@ function Canvas() {
       setDropLayerId(null);
       setDropSectionId(null);
       setNodeDragging(false);
+      setGuides([]);
 
       const ids = new Set(dragged.map((node) => node.id));
 
@@ -1145,8 +1309,14 @@ function Canvas() {
         );
       }
       setDropSectionId((current) => (current === sectionId ? current : sectionId));
+
+      // A hint that the card lines up with its neighbours; five screen pixels,
+      // whatever the zoom level happens to be.
+      if (doc && docNode) {
+        setGuides(alignmentGuides(doc, docNode, node.position, 5 / Math.max(0.2, getZoom())));
+      }
     },
-    [doc, layerRowAt],
+    [doc, getZoom, layerRowAt],
   );
 
   const handleNodesDelete = useCallback(
@@ -1429,7 +1599,15 @@ function Canvas() {
     >
       <header className="topbar">
         <div className="brand">
-          <Logo />
+          <button
+            type="button"
+            className="brand__mark"
+            onClick={cycleAccent}
+            title={`Accent colour: ${accent}`}
+            aria-label={`Accent colour ${accent} – switch to ${ACCENTS[(ACCENTS.indexOf(accent) + 1) % ACCENTS.length]}`}
+          >
+            <Logo />
+          </button>
           <div className="brand__text">
             <h1 className="brand__title">NMAP2Flowchart</h1>
             <span>scan · diagram</span>
@@ -1497,12 +1675,12 @@ function Canvas() {
               {accountLabel}
             </span>
           ) : (
-            <SaveStatus status={workspaceStatus} visible={Boolean(doc)} />
+            <SaveStatus status={workspaceStatus} visible={Boolean(doc)} onSaveCopy={exportDesign} />
           )}
           {!SHARE_TOKEN && (
             <button
               type="button"
-              className="btn btn--ghost workspace-save"
+              className="btn btn--ghost btn--bordered workspace-save"
               disabled={!doc}
               title="Save the diagram as a file"
               onClick={exportDesign}
@@ -1618,8 +1796,6 @@ function Canvas() {
               }}
             />
           )}
-
-          <HelpButton shared={shared.enabled} />
 
           <button
             type="button"
@@ -1854,6 +2030,29 @@ function Canvas() {
           >
             {imports.importing ? 'Importing…' : canImport ? 'Import / Export' : 'Export'}
           </button>
+
+          <button
+            type="button"
+            className="btn btn--ghost btn--icon theme-toggle"
+            aria-label={theme === 'light' ? 'Switch to the dark theme' : 'Switch to the light theme'}
+            aria-pressed={theme === 'light'}
+            title={theme === 'light' ? 'Dark theme' : 'Light theme'}
+            data-tooltip={theme === 'light' ? 'Dark theme' : 'Light theme'}
+            onClick={() => setTheme((current) => (current === 'light' ? 'dark' : 'light'))}
+          >
+            {theme === 'light' ? (
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M20 14.4A8.4 8.4 0 0 1 9.6 4 8.6 8.6 0 1 0 20 14.4Z" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <circle cx="12" cy="12" r="4.2" />
+                <path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" />
+              </svg>
+            )}
+          </button>
+
+          <HelpButton shared={shared.enabled} />
           <input
             ref={fileInput}
             type="file"
@@ -2147,8 +2346,9 @@ function Canvas() {
             onConnect={handleConnect}
             nodesDraggable={!shared.readOnly}
             nodesConnectable={!shared.readOnly}
+            onlyRenderVisibleElements
             deleteKeyCode={null}
-            colorMode="dark"
+            colorMode={theme}
             minZoom={0.08}
             maxZoom={2.2}
             snapToGrid={snapSize > 0}
@@ -2160,11 +2360,16 @@ function Canvas() {
             multiSelectionKeyCode={null}
             selectionOnDrag={false}
             zoomOnDoubleClick={false}
-            connectionLineStyle={{ stroke: '#2fd6a5', strokeWidth: 2, strokeDasharray: '4 4' }}
+            connectionLineStyle={{ stroke: 'var(--accent)', strokeWidth: 2, strokeDasharray: '4 4' }}
             defaultEdgeOptions={{ type: 'default' }}
             proOptions={{ hideAttribution: false }}
           >
-            <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color="#222b38" />
+            <Background
+              variant={BackgroundVariant.Dots}
+              gap={24}
+              size={1.5}
+              color={theme === 'light' ? '#c3d0de' : '#222b38'}
+            />
             <Controls showInteractive={false} position="bottom-left" />
             {!narrowCanvas && (
               <MiniMap
@@ -2172,10 +2377,25 @@ function Canvas() {
                 zoomable
                 position="bottom-right"
                 style={{ width: 176, height: 116 }}
-                nodeColor="#2f3d52"
-                nodeStrokeColor="#3d4d66"
-                maskColor="rgba(6,9,14,0.78)"
+                nodeColor={theme === 'light' ? '#c3d0de' : '#2f3d52'}
+                nodeStrokeColor={theme === 'light' ? '#a9b8ca' : '#3d4d66'}
+                maskColor={theme === 'light' ? 'rgba(233,239,247,0.72)' : 'rgba(6,9,14,0.78)'}
               />
+            )}
+            {guides.length > 0 && (
+              <ViewportPortal>
+                {guides.map((guide) => (
+                  <div
+                    key={`${guide.axis}-${Math.round(guide.at)}`}
+                    className={`align-guide align-guide--${guide.axis}`}
+                    style={
+                      guide.axis === 'x'
+                        ? { left: guide.at, top: guide.from, height: guide.to - guide.from }
+                        : { top: guide.at, left: guide.from, width: guide.to - guide.from }
+                    }
+                  />
+                ))}
+              </ViewportPortal>
             )}
           </ReactFlow>
 
@@ -2191,6 +2411,8 @@ function Canvas() {
           {menu && (
             <ContextMenu x={menu.x} y={menu.y} title={menuTitle} entries={menuEntries} onClose={() => setMenu(null)} />
           )}
+
+          <CommandPalette open={paletteOpen} commands={commands} onClose={() => setPaletteOpen(false)} />
 
           {hoverCard && hoveredNode && (
             <HoverCard
@@ -2447,6 +2669,7 @@ function Canvas() {
           setFileHubOpen(false);
           // Dropping the panel must not leave a pending import behind, or the
           // standalone preview would pop up in its place.
+          imports.cancelImport();
           imports.closePreview();
         }}
         onCancelReview={imports.closePreview}
@@ -2470,6 +2693,7 @@ function Canvas() {
         onChooseMode={imports.chooseMode}
         onConfirm={imports.confirmPreview}
         onExport={exportFromHub}
+        onCancelImport={imports.cancelImport}
       />
       {designPreview && (
         <DesignOpenDialog

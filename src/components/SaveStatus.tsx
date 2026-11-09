@@ -36,7 +36,16 @@ function ago(savedAt: number | null, now: number): string {
  * The save chip: one glance tells you the diagram is safe, and the panel answers
  * the two questions people actually ask – where is it, and how big is it.
  */
-export function SaveStatus({ status, visible }: { status: WorkspaceStatus; visible: boolean }) {
+export function SaveStatus({
+  status,
+  visible,
+  onSaveCopy,
+}: {
+  status: WorkspaceStatus;
+  visible: boolean;
+  /** Hands the diagram over as a design file, for when storage is the problem. */
+  onSaveCopy: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const panelId = useId();
@@ -161,6 +170,14 @@ export function SaveStatus({ status, visible }: { status: WorkspaceStatus; visib
           )}
 
           {status.error && <p className="save-status__error">{status.error}</p>}
+
+          <button type="button" className="save-status__copy" onClick={onSaveCopy}>
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M12 4v10m0 0 4-4m-4 4-4-4" />
+              <path d="M5 17.5V19a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19v-1.5" />
+            </svg>
+            Download a copy of this diagram
+          </button>
 
           <p className="save-status__note">
             Nothing leaves this browser. <strong>Export → Design file</strong> keeps a copy you can move

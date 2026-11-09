@@ -1,11 +1,11 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
 import type { DiagramDoc } from '../doc/types';
 import type { NmapScan } from '../model/types';
 import type { ImportEffect, ImportMode } from '../doc/docFromScan';
 import type { DesignFile, DesignRepair } from '../doc/designFile';
 import { looksLikeJson, readDesignFile } from '../doc/designFile';
-import { LARGE_SCAN_BYTES, importScan } from '../nmap/importScan';
+import { LARGE_SCAN_BYTES, MAX_SCAN_BYTES, importScan } from '../nmap/importScan';
 import type { ImportSuccess } from '../nmap/runImport';
 
 /** What the import preview dialog needs to know about the file it is showing. */
@@ -61,12 +61,32 @@ export function useImportFlow({
 }) {
   const [importing, setImporting] = useState(false);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
+  /** The import in flight, so the dialog's Cancel can actually stop the worker. */
+  const inFlight = useRef<AbortController | null>(null);
 
   const closePreview = useCallback(() => setPreview(null), []);
+
+  const cancelImport = useCallback(() => {
+    inFlight.current?.abort();
+    inFlight.current = null;
+    setImporting(false);
+  }, []);
 
   const chooseMode = useCallback((mode: ImportMode) => {
     setPreview((current) => (current ? { ...current, mode } : current));
   }, []);
+
+  const tooLarge = useCallback(
+    (file: File) => {
+      if (file.size <= MAX_SCAN_BYTES) return false;
+      notify(
+        `“${file.name}” is ${Math.round(file.size / 1024 / 1024)} MB – the editor draws at most ` +
+          `${MAX_SCAN_BYTES / 1024 / 1024} MB of scan in one tab. Split the target range and import it in parts.`,
+      );
+      return true;
+    },
+    [notify],
+  );
 
   const importText = useCallback(
     async (text: string, fileName: string, mode: ImportMode = 'merge') => {
@@ -94,6 +114,11 @@ export function useImportFlow({
     async (files: FileList | File[], mode: ImportMode) => {
       const list = Array.from(files);
       if (list.length === 0) return;
+
+      const controller = new AbortController();
+      inFlight.current = controller;
+      const { signal } = controller;
+      const aborted = () => signal.aborted;
       setImporting(true);
 
       try {
@@ -104,11 +129,16 @@ export function useImportFlow({
           let failed = 0;
           let designFile = false;
           for (const file of list) {
+            if (aborted()) break;
+            if (tooLarge(file)) {
+              failed += 1;
+              continue;
+            }
             try {
               const text = await file.text();
               designFile = looksLikeJson(text);
               if (designFile) break;
-              const result = await importScan({ text, fileName: file.name, mode: 'layer', doc: next });
+              const result = await importScan({ text, fileName: file.name, mode: 'layer', doc: next }, { signal });
               if (!result.ok) {
                 failed += 1;
                 continue;
@@ -116,7 +146,8 @@ export function useImportFlow({
               next = result.doc;
               layerId = result.layerId;
               added += result.added;
-            } catch {
+            } catch (error) {
+              if (error instanceof Error && error.name === 'AbortError') return;
               failed += 1;
             }
           }
@@ -132,6 +163,7 @@ export function useImportFlow({
         }
 
         const file = list[0];
+        if (tooLarge(file)) return;
         if (list.length > 1) {
           notify(`Importing ${file.name} only – choose “Add scan as new layer” for a batch`);
         }
@@ -143,7 +175,8 @@ export function useImportFlow({
         if (text.length > LARGE_SCAN_BYTES) {
           notify(`“${file.name}” is large – laying it out in the background…`);
         }
-        const result = await importScan({ text, fileName: file.name, mode, doc });
+        const result = await importScan({ text, fileName: file.name, mode, doc }, { signal });
+        if (aborted()) return;
         if (!result.ok) {
           notify(result.error);
           return;
@@ -158,12 +191,14 @@ export function useImportFlow({
           text,
         });
       } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') return;
         notify(`Could not read a file: ${(error as Error).message}`);
       } finally {
+        if (inFlight.current === controller) inFlight.current = null;
         setImporting(false);
       }
     },
-    [applyLayerBatch, doc, importText, notify],
+    [applyLayerBatch, doc, importText, notify, tooLarge],
   );
 
   const confirmPreview = useCallback(() => {
@@ -213,5 +248,6 @@ export function useImportFlow({
     chooseMode,
     closePreview,
     confirmPreview,
+    cancelImport,
   };
 }

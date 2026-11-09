@@ -4,9 +4,9 @@ import { portSummaryOr } from '../model/types';
 import { nodeRisk, type RiskPolicy } from '../doc/risk';
 import { buildScene } from '../graph/scene';
 import { HOP_H, HOP_W, HOST_H, HOST_W, NOTE_H, NOTE_W, ORIGIN_H, ORIGIN_W } from '../graph/layout';
+import { escapeXml } from './text';
 
-const esc = (value: string) =>
-  value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const esc = escapeXml;
 
 const cellId = (id: string) => `c_${id.replace(/[^0-9a-zA-Z]+/g, '_')}`;
 

@@ -21,6 +21,13 @@ const DB_VERSION = 1;
 const DB_STORE = 'workspace';
 const DB_KEY = 'current';
 
+/**
+ * Version of the stored envelope (`{ storeVersion, version, doc }`). The document
+ * carries its own `version`; this one is ours, and a bump means the read path has
+ * to migrate what an older build wrote.
+ */
+export const STORE_VERSION = 3;
+
 export type WorkspaceLocation = 'indexeddb' | 'local' | 'session';
 
 export type WorkspaceQuota = { usage: number; quota: number } | null;
@@ -210,9 +217,26 @@ export type WorkspaceWriteResult = {
   error: string | null;
 };
 
+/**
+ * The stored envelope as it sits on disk, whatever shape the build that wrote it
+ * used. Only the crash wall needs this: it is the escape hatch that hands the user
+ * a file when the editor itself cannot run.
+ */
+export async function readStoredWorkspace(): Promise<{ raw: string; location: WorkspaceLocation } | null> {
+  const fromDb = await readIndexedDb();
+  if (fromDb) return { raw: fromDb, location: 'indexeddb' };
+  const fromLocal = readLocal();
+  if (fromLocal) return { raw: fromLocal, location: 'local' };
+  const recovery = readRecovery();
+  if (recovery) return { raw: recovery, location: 'session' };
+  return null;
+}
+
 /** Persists the document, degrading to `localStorage` and then to the session. */
 export async function saveWorkspace(doc: DiagramDoc): Promise<WorkspaceWriteResult> {
-  const raw = JSON.stringify({ version: 2, doc });
+  // `storeVersion` describes the envelope itself, so a future change to how the
+  // workspace is stored can migrate instead of guessing from the document version.
+  const raw = JSON.stringify({ storeVersion: STORE_VERSION, version: 2, doc });
   const bytes = byteSize(raw);
   const quota = await estimateQuota();
 

@@ -9,6 +9,7 @@ import {
   type RiskSummary,
 } from '../doc/risk';
 import type { RiskReportScope } from '../export/riskReport';
+import { useDialogFocus } from '../hooks/useDialogFocus';
 
 type RiskSummaryDialogProps = {
   open: boolean;
@@ -59,6 +60,7 @@ function RiskSummaryPanel(props: Omit<RiskSummaryDialogProps, 'open'> & { doc: D
   const { onClose, doc, policy, policyScope, onSelectNode, onExport } = props;
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef(onClose);
+  useDialogFocus(dialogRef);
   useEffect(() => {
     closeRef.current = onClose;
   }, [onClose]);

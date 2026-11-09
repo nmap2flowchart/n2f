@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 
 import type { ImportEffect, ImportMode } from '../doc/docFromScan';
 import type { ImportPreview } from '../hooks/useImportFlow';
+import { useDialogFocus } from '../hooks/useDialogFocus';
 import { FileGlyph, type FileGlyphName } from './FileGlyph';
 import { ImportPreviewBody } from './ImportPreview';
 
@@ -76,6 +77,7 @@ export function FileHubDialog({
   onChooseMode,
   onConfirm,
   onExport,
+  onCancelImport,
 }: {
   open: boolean;
   tab: FileHubTab;
@@ -96,10 +98,15 @@ export function FileHubDialog({
   onChooseMode: (mode: ImportMode) => void;
   onConfirm: () => void;
   onExport: (format: ExportFormat) => void;
+  /** Stops the import worker when the scan turns out to be the wrong file. */
+  onCancelImport: () => void;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const primaryRef = useRef<HTMLButtonElement>(null);
+  const sectionRef = useRef<HTMLElement>(null);
   const review = preview !== null;
+
+  useDialogFocus(sectionRef, open);
 
   useEffect(() => {
     if (!open) return;
@@ -132,6 +139,7 @@ export function FileHubDialog({
       }}
     >
       <section
+        ref={sectionRef}
         className="dialog import-guide file-hub"
         role="dialog"
         aria-modal="true"
@@ -205,8 +213,7 @@ export function FileHubDialog({
               </div>
 
               <p className="file-hub__footnote">
-                Picture formats follow what the canvas shows; the design file always carries the whole
-                document. The risk report is exported from the Risk panel, where its filter lives.
+                The design file always carries the whole document.
               </p>
             </>
           ) : (
@@ -263,7 +270,7 @@ export function FileHubDialog({
                 <button type="button" className="import-option" onClick={onChooseLayers} disabled={importing}>
                   <FileGlyph name="layers" />
                   <span className="import-option__body">
-                    <strong>Add scans as new layers</strong>
+                    <strong>Add scans as new layers (XML)</strong>
                     <span>Keep the open diagram and put one or more scans beside it, each on its own layer.</span>
                   </span>
                 </button>
@@ -298,8 +305,18 @@ export function FileHubDialog({
               <button type="button" className="link-button" onClick={onSample}>
                 Open the bundled sample scan
               </button>
-              . Everything is read in this tab – no scan data leaves your machine.
+              . Everything is read-only – no scan data leaves your machine.
             </p>
+
+            {importing && (
+              <div className="import-guide__working" role="status">
+                <span className="import-guide__spinner" aria-hidden="true" />
+                <span>Reading and laying out the scan…</span>
+                <button type="button" className="btn btn--tiny" onClick={onCancelImport}>
+                  Cancel import
+                </button>
+              </div>
+            )}
           </>
         )}
       </section>

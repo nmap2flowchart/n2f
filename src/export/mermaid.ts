@@ -3,9 +3,10 @@ import { buildScene } from '../graph/scene';
 import { iconEmoji } from '../icons/registry';
 import { openPorts, portSummaryOr } from '../model/types';
 import { hexToRgba, nodeRisk, type RiskPolicy } from '../doc/risk';
+import { escapeMermaid, stripControl } from './text';
 
 const mid = (id: string) => `n_${id.replace(/[^0-9a-zA-Z]+/g, '_')}`;
-const esc = (value: string) => value.replace(/"/g, "'").replace(/\s+/g, ' ').trim();
+const esc = escapeMermaid;
 
 function labelFor(node: DiagramNode): string {
   const icon = iconEmoji(node.icon);
@@ -32,7 +33,7 @@ export function toMermaid(doc: DiagramDoc, riskPolicy: RiskPolicy): string {
   const sections = visible.filter((node) => node.kind === 'section');
   const lines: string[] = ['flowchart LR'];
 
-  if (doc.args) lines.push(`  %% ${esc(doc.args)}`);
+  if (doc.args) lines.push(`  %% ${stripControl(doc.args).replace(/\s+/g, ' ').trim()}`);
 
   if (sections.length === 0) {
     for (const node of visible) lines.push(`  ${mid(node.id)}["${labelFor(node)}"]`);

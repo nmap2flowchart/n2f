@@ -55,7 +55,7 @@ export type BuildOptions = {
 
 const ROUTE_STYLE = { stroke: '#3f5d7a', strokeWidth: 1.5 };
 const INTO_HOST_STYLE = { stroke: '#2b4459', strokeWidth: 1.1, opacity: 0.7 };
-const LINK_STYLE = { stroke: '#2fd6a5', strokeWidth: 1.8 };
+const LINK_STYLE = { stroke: 'var(--accent)', strokeWidth: 1.8 };
 
 const DASH: Record<string, string | undefined> = {
   solid: undefined,
@@ -287,7 +287,7 @@ export function toRfEdge(edge: DiagramEdge, selected: boolean): AppEdge {
     interactionWidth: 26,
     data: { kind: edge.kind, label: edge.label },
     style: { ...LINK_STYLE, ...round, strokeDasharray: dash },
-    markerEnd: { type: MarkerType.ArrowClosed, color: '#2fd6a5', width: 16, height: 16 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--accent)', width: 16, height: 16 },
     label: edge.label,
     labelStyle: LABEL_STYLE,
     labelBgStyle: LABEL_BG_STYLE,
