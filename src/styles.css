@@ -12,6 +12,15 @@
   --accent-ink: #042219;
   --danger: #ff5d5d;
   --mono: ui-monospace, 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  /* Code panel syntax colours: one place to retune, and the light block below
+     only has to deepen them. */
+  --syn-comment: #6d7d92;
+  --syn-keyword: #6fd3ff;
+  --syn-attr: #7fb4ff;
+  --syn-string: #9ccf7a;
+  --syn-number: #e0a76a;
+  --syn-arrow: #b58aff;
+  --syn-label: #e5b567;
 
   color-scheme: dark;
   font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -179,8 +188,8 @@ body {
   .topbar__actions {
     gap: 5px;
   }
-  .search input {
-    flex-basis: 160px;
+  .search__field {
+    width: 168px;
   }
 }
 
@@ -552,7 +561,19 @@ body {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  margin-left: 1px;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.search__clear:hover {
+  color: var(--text);
+  background: var(--surface-2);
 }
 
 .topbar__divider {
@@ -569,32 +590,45 @@ body {
   min-width: 0;
 }
 
-/* The input is the one control that may shrink: with a fixed width it spilled out
-   of its flex item and covered the Fit button on narrower windows. */
-.search input {
+/* The bordered field is the row itself, so the count and the clear button are laid
+   out beside the text instead of being positioned on top of it. */
+.search__field {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   width: 190px;
-  min-width: 0;
-  flex: 1 1 190px;
+  /* Narrow windows squeeze the row; the field keeps enough room for the count and
+     the clear button rather than collapsing to a sliver of placeholder. */
+  min-width: 124px;
   height: 30px;
-  padding: 0 10px;
+  padding: 0 7px 0 10px;
   border-radius: 8px;
   border: 1px solid var(--line-strong);
   background: var(--surface-0);
-  color: var(--text);
-  font-size: 12px;
-  outline: none;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.search input::placeholder {
+/* The input is the one control that may shrink: with a fixed width it spilled out
+   of its flex item and covered the Fit button on narrower windows. */
+.search__field input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.search__field input::placeholder {
   color: #5b6a7d;
 }
 
 .search__shortcut {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
+  flex: none;
   min-width: 18px;
   height: 18px;
   display: grid;
@@ -608,27 +642,17 @@ body {
   pointer-events: none;
 }
 
-.search input:not(:placeholder-shown) {
-  padding-right: 30px;
-}
-
-.search__count {
-  right: 30px;
-}
-
-.search input:focus {
+.search__field:focus-within {
   border-color: color-mix(in srgb, var(--accent) 52%, transparent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .search__count {
-  position: absolute;
-  right: 8px;
+  flex: none;
   font-family: var(--mono);
   font-size: 10px;
   color: var(--muted);
-  background: var(--surface-0);
-  padding-left: 4px;
+  white-space: nowrap;
 }
 
 .btn {
@@ -853,14 +877,78 @@ body {
   height: 9px;
   background: var(--accent);
   border: 2px solid var(--line);
-  opacity: 0.55;
+  /* Four points per card: only show them when the card is in play. */
+  opacity: 0;
   transition: opacity 0.14s, transform 0.14s;
 }
 
 .react-flow__node:hover .node-handle,
-.react-flow__node.selected .node-handle {
+.react-flow__node.selected .node-handle,
+.canvas.is-connecting .node-handle {
   opacity: 1;
   transform: scale(1.15);
+}
+
+.arrow-picker {
+  display: flex;
+  gap: 6px;
+}
+
+.arrow-picker__option {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.arrow-picker__option svg {
+  width: 32px;
+  height: 12px;
+}
+
+.arrow-picker__option:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.arrow-picker__option.is-active {
+  border-color: var(--accent);
+  background: var(--surface-3);
+  color: var(--accent);
+}
+
+.side-picker {
+  display: flex;
+  gap: 6px;
+}
+
+.side-picker__option {
+  flex: 1;
+  padding: 4px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.side-picker__option:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.side-picker__option.is-active {
+  border-color: var(--accent);
+  background: var(--surface-3);
+  color: var(--accent);
 }
 
 .node-icon {
@@ -1082,6 +1170,17 @@ body {
   background: var(--surface-2);
   border: 1px solid var(--line-strong);
   color: #e08a8a;
+  font-size: 8.5px;
+  letter-spacing: 0.06em;
+  padding: 1px 4px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.tag--vm {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-2));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line-strong));
+  color: var(--text);
   font-size: 8.5px;
   letter-spacing: 0.06em;
   padding: 1px 4px;
@@ -3286,9 +3385,6 @@ select.input {
   .brand__text span {
     display: none;
   }
-  .search input {
-    width: 132px;
-  }
   .layer-panel {
     position: absolute;
     top: 0;
@@ -3299,7 +3395,10 @@ select.input {
   }
 }
 
-@media (max-width: 760px) {
+/* Below this width the action row cannot hold a readable field beside every button,
+   so the filter moves to the full-width search bar the phone layout already uses –
+   it shows the same "X of Y match" count and the same clear button. */
+@media (max-width: 1000px) {
   .search {
     display: none;
   }
@@ -3353,6 +3452,9 @@ select.input {
     font-size: 11px;
     white-space: nowrap;
   }
+}
+
+@media (max-width: 760px) {
   .inspector {
     position: absolute;
     top: 0;
@@ -3430,11 +3532,14 @@ select.input {
 }
 
 @media (min-width: 761px) {
-  .mobile-search-button,
-  .mobile-search {
+  .mobile-drawer-backdrop {
     display: none;
   }
-  .mobile-drawer-backdrop {
+}
+
+@media (min-width: 1001px) {
+  .mobile-search-button,
+  .mobile-search {
     display: none;
   }
 }
@@ -3890,6 +3995,175 @@ select.input {
   height: 14px;
   border-radius: 4px;
   border: 1px solid rgba(0, 0, 0, 0.35);
+}
+.connect-dialog {
+  width: min(620px, calc(100vw - 32px));
+}
+.connect-dialog__lede {
+  margin: 12px 0 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.connect-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.connect-kinds li {
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-soft);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.connect-kinds li b {
+  color: var(--text);
+  font-weight: 600;
+}
+.connect-kinds--os li {
+  border-style: dashed;
+}
+.connect-kinds--vm li {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: var(--text);
+}
+.connect-findings {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.connect-finding {
+  display: grid;
+  grid-template-columns: 74px 1fr;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.015);
+}
+.connect-finding__badge {
+  align-self: start;
+  padding: 2px 6px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-align: center;
+  text-transform: uppercase;
+  color: var(--text-soft);
+  background: var(--line);
+}
+.connect-finding.is-route .connect-finding__badge {
+  color: var(--accent-ink);
+  background: var(--accent);
+}
+.connect-finding.is-mac .connect-finding__badge {
+  color: #2b1503;
+  background: #f0a25c;
+}
+.connect-finding.is-name .connect-finding__badge {
+  color: #1b0730;
+  background: #c084fc;
+}
+.connect-finding.is-device .connect-finding__badge {
+  color: #04212b;
+  background: #5cc8f0;
+}
+.connect-finding strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.connect-finding em {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.connect-dialog__more {
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.connect-dialog__more:hover {
+  text-decoration: underline;
+}
+.connect-options {
+  display: grid;
+  gap: 2px;
+  margin: 18px 0 0;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.connect-options legend {
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.connect-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.connect-option input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+.connect-option.is-empty {
+  cursor: default;
+  opacity: 0.55;
+}
+.connect-option strong {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.connect-option strong b {
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--line);
+  color: var(--text-soft);
+  font-size: 10px;
+  font-weight: 600;
+}
+.connect-option em {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.45;
+}
+.connect-dialog__footnote {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 @media (max-width: 760px) {
   .autosave-status {
@@ -6091,6 +6365,14 @@ select.input {
   --glass: rgba(238, 242, 247, 0.96);
   --glass-strong: rgba(234, 239, 245, 0.98);
   --row-bg: #e7edf4;
+  /* Syntax colours dark enough to read on the pale panel. */
+  --syn-comment: #6b7c90;
+  --syn-keyword: #0b6e8a;
+  --syn-attr: #1f5fa8;
+  --syn-string: #2f7d32;
+  --syn-number: #90541a;
+  --syn-arrow: #6a3fb5;
+  --syn-label: #8a5a00;
   /* The pale background needs a deeper accent, and white ink on it. */
   --accent: #0f8f6c;
   --accent-ink: #ffffff;
@@ -6190,4 +6472,412 @@ select.input {
 
 .brand__mark:active {
   transform: translateY(0);
+}
+
+/* Code panel: the same layer, as text. Sits between the canvas and the
+   inspector, resize strip on its left edge, and every colour comes from a token
+   so the light theme and the three accents need no overrides. */
+.code-panel {
+  --code-font-size: 12px;
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+}
+
+.code-panel__resizer {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  bottom: 0;
+  z-index: 5;
+  width: 7px;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.code-panel__resizer:hover,
+.code-panel__resizer.is-dragging {
+  background: linear-gradient(90deg, transparent, var(--accent));
+  opacity: 0.5;
+}
+
+.code-panel__resizer:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.code-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 10px 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.code-panel__head strong {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.code-panel__eyebrow {
+  display: block;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+/* Editor tools: text size, find, and the colour swatch for the token at the caret. */
+.code-panel__toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.code-panel__tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.code-panel__tool:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.code-panel__tool.is-on {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.code-panel__tool:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.code-panel__font {
+  min-width: 34px;
+  text-align: center;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.code-panel__tool-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--line);
+}
+
+.code-panel__swatch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  margin-left: auto;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text-soft);
+  font-size: 10.5px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.code-panel__swatch.is-off {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.code-panel__swatch-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.code-panel__swatch-text {
+  max-width: 88px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+}
+
+.code-panel__swatch input[type='color'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.code-panel__swatch.is-off input[type='color'] {
+  cursor: default;
+}
+
+.code-panel__find {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.code-panel__find-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.code-panel__find-input {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.code-panel__find-count {
+  min-width: 40px;
+  text-align: right;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.code-panel__editor {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  margin: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+/* One set of metrics for the highlighted copy and the real textarea: any drift
+   between them shows up as the caret sliding away from the glyph under it. The
+   left padding is the numbered gutter. */
+.code-panel__highlight,
+.code-panel__area {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 10px 12px 10px 48px;
+  border: 0;
+  font-family: var(--mono);
+  font-size: var(--code-font-size);
+  line-height: 1.6;
+  letter-spacing: 0;
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.code-panel__highlight {
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--text-soft);
+}
+
+/* One block per logical line, so a wrapped line keeps a single number and the
+   current line can be tinted without measuring anything. */
+.code-line {
+  position: relative;
+  display: block;
+  min-height: 1.6em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 4px;
+}
+
+.code-line[data-line]::before {
+  content: attr(data-line);
+  position: absolute;
+  top: 0;
+  right: calc(100% + 6px);
+  /* An explicit width: with only `right` set the shrink-to-fit box has no room
+     outside the line and collapses to a single digit. */
+  width: 34px;
+  text-align: right;
+  white-space: nowrap;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.55;
+  user-select: none;
+}
+
+.code-line.is-active {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.code-panel__area {
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+  overflow: auto;
+}
+
+.code-panel__area::selection {
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+  color: transparent;
+}
+
+/* Syntax tokens; the palette is in `--syn-*` so one block flips with the theme. */
+.tk-comment {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+
+.tk-directive {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tk-keyword {
+  color: var(--syn-keyword);
+}
+
+.tk-id {
+  color: var(--text);
+}
+
+.tk-attr {
+  color: var(--syn-attr);
+}
+
+.tk-string {
+  color: var(--syn-string);
+}
+
+.tk-number,
+.tk-color {
+  color: var(--syn-number);
+}
+
+.tk-arrow {
+  color: var(--syn-arrow);
+  font-weight: 600;
+}
+
+.tk-edgeLabel {
+  color: var(--syn-label);
+  font-style: italic;
+}
+
+.tk-punct {
+  color: var(--muted);
+}
+
+.code-panel__error {
+  margin: 0;
+  padding: 8px 14px;
+  border-top: 1px solid var(--line);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.code-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+}
+
+.code-panel__help-toggle.is-on {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.code-panel__state {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.code-panel__help {
+  max-height: 42vh;
+  overflow-y: auto;
+  padding: 4px 14px 14px;
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-soft);
+}
+
+.code-panel__help p {
+  margin: 8px 0;
+}
+
+.code-panel__help ul {
+  margin: 8px 0;
+  padding-left: 16px;
+}
+
+.code-panel__help code {
+  font-family: var(--mono);
+  font-size: 10.8px;
+  color: var(--text);
+}
+
+.code-panel__help-note {
+  color: var(--muted);
+}
+
+@media (max-width: 900px) {
+  .code-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    width: min(92vw, 430px) !important;
+    box-shadow: -18px 0 40px rgba(0, 0, 0, 0.4);
+  }
 }
