@@ -1,4 +1,5 @@
-import { openPorts, type NmapHost, type NmapPort } from '../model/types';
+import { openPorts, type NmapHost, type NmapPort, type VulnRef } from '../model/types';
+import { looksLikeJson } from './formatSniff';
 import { normalizeRiskPolicy, type RiskPolicy, type RiskScope } from './risk';
 import {
   EDGE_ARROWS,
@@ -138,6 +139,9 @@ function repairPorts(value: unknown): NmapPort[] {
       devicetype: text(raw?.devicetype) || undefined,
       ostype: text(raw?.ostype) || undefined,
       cpe: Array.isArray(raw?.cpe) ? raw.cpe.filter((item): item is string => typeof item === 'string') : undefined,
+      firstSeen: text(raw?.firstSeen) || undefined,
+      lastSeen: text(raw?.lastSeen) || undefined,
+      previousState: text(raw?.previousState) || undefined,
       scripts: (Array.isArray(raw?.scripts) ? raw.scripts : []).flatMap((script) => {
         const item = record(script);
         const id = text(item?.id);
@@ -199,6 +203,30 @@ function repairHost(value: unknown): NmapHost | null {
       return id ? [{ id, output: text(item?.output) }] : [];
     }),
     hops: (Array.isArray(raw.hops) ? raw.hops : []).filter((item): item is string => typeof item === 'string'),
+    seenAt: text(raw.seenAt) || undefined,
+    scanFile: text(raw.scanFile) || undefined,
+    ...(Array.isArray(raw.vulns) && raw.vulns.length > 0
+      ? {
+          vulns: raw.vulns.flatMap((entry) => {
+            const item = record(entry);
+            const id = text(item?.id);
+            if (!id) return [];
+            const severity = text(item?.severity);
+            const cvss = typeof item?.cvss === 'number' ? item.cvss : undefined;
+            return [
+              {
+                id,
+                ...(cvss !== undefined ? { cvss } : {}),
+                severity: (['critical', 'high', 'medium', 'low', 'info'].includes(severity)
+                  ? severity
+                  : 'info') as VulnRef['severity'],
+                script: text(item?.script) || 'import',
+                ...(text(item?.title) ? { title: text(item?.title) } : {}),
+              },
+            ];
+          }),
+        }
+      : {}),
   };
 }
 
@@ -253,6 +281,23 @@ function repairNodes(value: unknown, layers: Layer[]): { nodes: DiagramNode[]; d
     const parent = node.parentId ? byId.get(node.parentId) : undefined;
     if (node.parentId && (!parent || parent.kind !== 'section')) node.parentId = null;
   }
+  // A frame inside itself cannot be measured, so a file that claims one is repaired
+  // by lifting the frame out rather than trusted.
+  for (const node of nodes) {
+    if (node.kind !== 'section' || !node.parentId) continue;
+    const seen = new Set([node.id]);
+    let current: DiagramNode | undefined = byId.get(node.parentId);
+    let guard = 0;
+    while (current && guard < 64) {
+      if (seen.has(current.id)) {
+        node.parentId = null;
+        break;
+      }
+      seen.add(current.id);
+      current = current.parentId ? byId.get(current.parentId) : undefined;
+      guard += 1;
+    }
+  }
   return { nodes, dropped };
 }
 
@@ -302,12 +347,27 @@ function repairDoc(value: unknown): { doc: DiagramDoc; repair: DesignRepair } | 
   const { nodes, dropped: droppedNodes } = repairNodes(raw.nodes, layers);
   const { edges, dropped: droppedEdges } = repairEdges(raw.edges, nodes);
   const focused = text(raw.focusedLayerId);
+  const targets = (Array.isArray(raw.targets) ? raw.targets : []).flatMap((entry) => {
+    const target = text(entry);
+    return target ? [target] : [];
+  });
+  const groupingRaw = record(raw.grouping);
+  const prefix = (key: string, max: number) => {
+    const value = Number(groupingRaw?.[key]);
+    return Number.isInteger(value) && value > 0 && value <= max ? value : undefined;
+  };
+  const ipv4 = prefix('ipv4', 32);
+  const ipv6 = prefix('ipv6', 128);
 
   return {
     doc: {
       version: 2,
       fileName: text(raw.fileName) || 'untitled diagram',
       args: text(raw.args) || undefined,
+      ...(targets.length > 0 ? { targets } : {}),
+      ...(ipv4 !== undefined || ipv6 !== undefined
+        ? { grouping: { ...(ipv4 !== undefined ? { ipv4 } : {}), ...(ipv6 !== undefined ? { ipv6 } : {}) } }
+        : {}),
       layers,
       nodes,
       edges,
@@ -386,10 +446,12 @@ export function readDesignFile(raw: string): DesignRead {
   return { ok: true, design, doc: repaired.doc, repair: repaired.repair };
 }
 
-/** True when the text looks like a saved diagram rather than nmap XML. */
-export function looksLikeJson(raw: string): boolean {
-  return /^[\uFEFF\s]*[{[]/.test(raw);
-}
+/**
+ * Kept as a re-export so every existing reader of the design file and the tests
+ * keep one import site; the check itself lives in `formatSniff.ts` so it never
+ * pulls a parser into the main bundle.
+ */
+export { looksLikeJson };
 
 export function designCounts(doc: DiagramDoc): DesignCounts {
   let hosts = 0;

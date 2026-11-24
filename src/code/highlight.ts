@@ -25,7 +25,7 @@ export type HighlightKind =
 
 export type HighlightToken = { text: string; kind: HighlightKind };
 
-const DIRECTIVES = new Set(['flowchart', 'graph', 'subgraph', 'end', 'layer', 'risk', 'direction']);
+const DIRECTIVES = new Set(['flowchart', 'graph', 'subgraph', 'end', 'layer', 'risk', 'grouping', 'direction']);
 const DIRECTIONS = new Set(['LR', 'RL', 'TB', 'BT']);
 
 /** Bare values that read as language, not as a name. */

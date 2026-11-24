@@ -16,7 +16,9 @@ import {
 } from '@xyflow/react';
 
 import { HostNode, HopNode, NoteNode, OriginNode, SectionNode } from './components/nodes';
-import { alignmentGuides, type Guide } from './graph/guides';import { Inspector } from './components/Inspector';
+import { createGuideIndex, guidesFromIndex, type Guide, type GuideIndex } from './graph/guides';
+import { EMPTY_FILTER, compileFilter, type CompiledFilter } from './graph/filter';
+import { Inspector } from './components/Inspector';
 import { LayerPanel } from './components/LayerPanel';
 import { CodePanel, type ApplyCodeOutcome } from './components/CodePanel';
 import { applyLayerCode } from './code/codeToDoc';
@@ -46,11 +48,18 @@ import {
   isLayerVisible,
   layerMap,
   nodeTitle,
+  type DiagramDesign,
   type DiagramDoc,
   type DiagramNode,
   type EdgeSide,
 } from './doc/types';
-import { absolutePosition, nodeSize, sectionAt } from './doc/measure';
+import {
+  absolutePosition,
+  nodeSize,
+  sectionAtFrames,
+  sectionFrames,
+  type SectionFrame,
+} from './doc/measure';
 import {
   addLayer,
   addLink,
@@ -59,18 +68,22 @@ import {
   countNodesByLayer,
   createNode,
   deleteLayer,
+  descendantNodeIds,
   duplicateNode,
+  groupIntoSection,
   moveLayer,
   patchEdge,
   patchNode,
   patchNodes,
   recolorLayer,
+  regroupSections,
   releaseSectionSize,
   removeEdges,
   removeNodes,
   renameLayer,
   setFocusedLayer,
   setNodeSection,
+  setNoteSize,
   setSectionSize,
   toggleLayerVisible,
   alignNodes,
@@ -111,6 +124,10 @@ const ONBOARDING_KEY = 'nmap2flowchart.onboardingDismissed';
 const LEGACY_ONBOARDING_KEY = 'nmap2flowio.onboardingDismissed';
 /** Canvas surface preference: dark for editing, light to match the exported page. */
 const CANVAS_THEME_KEY = 'nmap2flowchart.canvasTheme';
+/** Presentation preference: the detailed cards, or a plain network diagram. */
+const DESIGN_KEY = 'nmap2flowchart.design';
+/** Browser preference: treat each filter value as a regular expression. */
+const FILTER_REGEX_KEY = 'nmap2flowchart.regexFilter';
 /** Accent presets, cycled by clicking the logo. Green is the house colour. */
 const ACCENT_KEY = 'nmap2flowchart.accent';
 const ACCENTS = ['green', 'orange', 'purple'] as const;
@@ -139,6 +156,14 @@ const readAccent = (): Accent => {
     return ACCENTS.includes(stored as Accent) ? (stored as Accent) : 'green';
   } catch {
     return 'green';
+  }
+};
+
+const readDesign = (): DiagramDesign => {
+  try {
+    return window.localStorage.getItem(DESIGN_KEY) === 'basic' ? 'basic' : 'detailed';
+  } catch {
+    return 'detailed';
   }
 };
 
@@ -193,21 +218,36 @@ function Logo({ size = 38 }: { size?: number }) {
   );
 }
 
-function Stat({ label, value, tone, optional }: { label: string; value: number; tone?: 'danger'; optional?: boolean }) {
+function Stat({ label, value, tone }: { label: string; value: number; tone?: 'danger' }) {
   return (
-    <div className={`stat${tone === 'danger' ? ' stat--danger' : ''}${optional ? ' stat--optional' : ''}`}>
+    <div className={`stat${tone === 'danger' ? ' stat--danger' : ''}`}>
       <span className="stat__value">{value}</span>
       <span className="stat__label">{label}</span>
     </div>
   );
 }
 
-function pointerOf(event: MouseEvent | TouchEvent): { x: number; y: number } | null {
+type PointerEventLike = Parameters<OnNodeDrag<AppNode>>[0];
+
+function pointerOf(event: PointerEventLike): { x: number; y: number } | null {
   if ('changedTouches' in event) {
     const touch = event.changedTouches[0];
     return touch ? { x: touch.clientX, y: touch.clientY } : null;
   }
   return { x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY };
+}
+
+/** Guides are hints redrawn per frame; identical ones must not re-render the editor. */
+function sameGuides(left: Guide[], right: Guide[]): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every(
+    (guide, index) =>
+      guide.axis === right[index].axis &&
+      guide.at === right[index].at &&
+      guide.from === right[index].from &&
+      guide.to === right[index].to,
+  );
 }
 
 type MenuState =
@@ -262,11 +302,23 @@ function Canvas() {
 
   const [selection, setSelection] = useState<{ nodes: string[]; edges: string[] }>({ nodes: [], edges: [] });
   const [query, setQuery] = useState('');
+  const [filterRegex, setFilterRegex] = useState(() => {
+    try {
+      return window.localStorage.getItem(FILTER_REGEX_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [activeLayerId, setActiveLayerId] = useState(MAIN_LAYER);
   const [layersOpen, setLayersOpen] = useState(
     () => !window.matchMedia('(max-width: 760px)').matches,
   );
   const [codePanelOpen, setCodePanelOpen] = useState(false);
+  // The inspector renders nothing without a selection, so the phone backdrop has to
+  // follow the selection too – otherwise a full-size scrim covers the canvas for good.
+  const inspectorOpen =
+    Boolean(doc) && !shared.readOnly && (selection.nodes.length > 0 || selection.edges.length > 0);
+  const closeInspector = useCallback(() => setSelection({ nodes: [], edges: [] }), []);
   const [toast, setToast] = useState<string | null>(null);
   const [toastUndo, setToastUndo] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -327,6 +379,22 @@ function Canvas() {
     }
   }, [accent]);
 
+  const [design, setDesign] = useState<DiagramDesign>(readDesign);
+
+  useEffect(() => {
+    // The same place the theme lives: a browser preference, not diagram state.
+    document.documentElement.dataset.design = design;
+    try {
+      window.localStorage.setItem(DESIGN_KEY, design);
+    } catch {
+      // A private-mode browser refuses storage; the choice just will not stick.
+    }
+  }, [design]);
+
+  const toggleDesign = useCallback(() => {
+    setDesign((current) => (current === 'basic' ? 'detailed' : 'basic'));
+  }, []);
+
   const cycleAccent = useCallback(() => {
     setAccent((current) => ACCENTS[(ACCENTS.indexOf(current) + 1) % ACCENTS.length]);
   }, []);
@@ -359,6 +427,16 @@ function Canvas() {
   const marqueeClickGuard = useRef(false);
   const recentDowns = useRef<{ at: number; nodeId: string | null }[]>([]);
   const hoverTimer = useRef<number | undefined>(undefined);
+  /**
+   * What a drag can reuse: the guide lines and the section frames do not change
+   * while one card moves, so they are built once on drag start instead of on
+   * every pointer move.
+   */
+  const dragGuides = useRef<{ nodeId: string; index: GuideIndex } | null>(null);
+  const dragSections = useRef<SectionFrame[] | null>(null);
+  const dragFrame = useRef<number | null>(null);
+  const pendingDrag = useRef<{ event: PointerEventLike; node: AppNode } | null>(null);
+  const docById = useMemo(() => new Map((doc?.nodes ?? []).map((node) => [node.id, node])), [doc]);
   const { fitView, screenToFlowPosition, getZoom } = useReactFlow();
 
   const notify = useCallback((message: string) => {
@@ -385,10 +463,12 @@ function Canvas() {
     exportRiskReport,
     exportMermaid,
     exportDrawio,
+    exportInventoryMarkdown,
+    exportInventoryCsv,
     exportSvgFile,
     exportPngFile,
     exportPdfFile,
-  } = useExportFlow({ doc, riskPolicy, riskScope, query, notify });
+  } = useExportFlow({ doc, riskPolicy, riskScope, query, design, notify });
 
   const closeMenus = useCallback(() => {
     setMoreMenu(false);
@@ -722,11 +802,23 @@ function Canvas() {
       if (format === 'design') exportDesign();
       else if (format === 'mermaid') exportMermaid();
       else if (format === 'drawio') exportDrawio();
+      else if (format === 'inventory-md') exportInventoryMarkdown();
+      else if (format === 'inventory-csv') exportInventoryCsv();
       else if (format === 'svg') exportSvgFile();
       else if (format === 'png') void exportPngFile();
       else void exportPdfFile();
     },
-    [closeMenus, exportDesign, exportDrawio, exportMermaid, exportPdfFile, exportPngFile, exportSvgFile],
+    [
+      closeMenus,
+      exportDesign,
+      exportDrawio,
+      exportInventoryCsv,
+      exportInventoryMarkdown,
+      exportMermaid,
+      exportPdfFile,
+      exportPngFile,
+      exportSvgFile,
+    ],
   );
 
   const handleFiles = useCallback(
@@ -824,6 +916,40 @@ function Canvas() {
     [history],
   );
 
+  const resizeNote = useCallback(
+    (id: string, size: { w: number; h: number }) => {
+      history.commit((current) => setNoteSize(current, id, size));
+    },
+    [history],
+  );
+
+  /** One resize handler for the two things a user can drag by hand. */
+  const resizeNode = useCallback(
+    (id: string, size: { w: number; h: number }) => {
+      const node = doc?.nodes.find((item) => item.id === id);
+      if (node?.kind === 'note') resizeNote(id, size);
+      else resizeSection(id, size);
+    },
+    [doc, resizeNote, resizeSection],
+  );
+
+  /** Wraps the selection in a frame of its own, one undoable step. */
+  const groupSelection = useCallback(
+    (ids: string[]) => {
+      if (!doc) return;
+      const result = groupIntoSection(doc, ids);
+      if (!result) return;
+      history.commit(result.doc);
+      setSelection({ nodes: [result.id], edges: [] });
+      notify(
+        `“${result.doc.nodes.find((node) => node.id === result.id)?.label ?? 'Section'}” now holds ${ids.length} ${
+          ids.length === 1 ? 'node' : 'nodes'
+        } – drag a section onto another to nest it`,
+      );
+    },
+    [doc, history, notify],
+  );
+
   const resetSectionSize = useCallback(
     (id: string) => history.commit((current) => setSectionSize(current, id, null)),
     [history],
@@ -833,6 +959,18 @@ function Canvas() {
     (id: string) => {
       history.commit((current) => arrangeSection(current, id));
       notify('Section arranged into an even grid');
+    },
+    [history, notify],
+  );
+
+  const regroupAll = useCallback(
+    (grouping: { ipv4?: number; ipv6?: number } | undefined) => {
+      history.commit((current) => regroupSections(current, grouping));
+      notify(
+        grouping?.ipv4
+          ? `Subnet frames regrouped by /${grouping.ipv4}`
+          : 'Subnet frames regrouped from the scan range',
+      );
     },
     [history, notify],
   );
@@ -914,8 +1052,16 @@ function Canvas() {
         id: 'export',
         group: 'File',
         label: 'Export this diagram…',
-        hint: 'Mermaid, draw.io, SVG, PNG, PDF',
+        hint: 'Mermaid, draw.io, SVG, PNG, PDF, host inventory',
         run: () => openFileHub('export'),
+        disabled: !doc,
+      },
+      {
+        id: 'export-inventory',
+        group: 'File',
+        label: 'Export a host inventory (Markdown)',
+        hint: 'address, names, role, ports, risk and findings per host',
+        run: exportInventoryMarkdown,
         disabled: !doc,
       },
       {
@@ -978,6 +1124,13 @@ function Canvas() {
         run: cycleAccent,
       },
       {
+        id: 'design',
+        group: 'View',
+        label: design === 'basic' ? 'Switch to the detailed design' : 'Switch to the basic diagram design',
+        hint: 'plain boxes and captions – the picture exports follow it too',
+        run: toggleDesign,
+      },
+      {
         id: 'add-host',
         group: 'Add',
         label: 'Add a host',
@@ -986,6 +1139,14 @@ function Canvas() {
       { id: 'add-hop', group: 'Add', label: 'Add a traceroute hop', run: () => handleAddNode('hop') },
       { id: 'add-section', group: 'Add', label: 'Add a section', run: () => handleAddNode('section') },
       { id: 'add-note', group: 'Add', label: 'Add a note', run: () => handleAddNode('note') },
+      {
+        id: 'group-section',
+        group: 'Edit',
+        label: 'Group the selection into a section',
+        hint: 'a section can hold sections – drag one onto another to nest them',
+        run: () => groupSelection(selection.nodes),
+        disabled: !doc || shared.readOnly || selection.nodes.length === 0,
+      },
       {
         id: 'connect',
         group: 'Review',
@@ -1017,7 +1178,7 @@ function Canvas() {
     }
 
     return list;
-  }, [accent, codePanelOpen, cycleAccent, doc, exportDesign, fitView, handleAddNode, history, legendOpen, openFileHub, shared.readOnly, snapSize, startConnect]);
+  }, [accent, codePanelOpen, cycleAccent, design, doc, exportDesign, exportInventoryMarkdown, fitView, groupSelection, handleAddNode, history, legendOpen, openFileHub, selection.nodes, shared.readOnly, snapSize, startConnect, toggleDesign]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1328,6 +1489,14 @@ function Canvas() {
 
   const handleDragStop: OnNodeDrag<AppNode> = useCallback(
     (event, _node, dragged) => {
+      if (dragFrame.current !== null) {
+        window.cancelAnimationFrame(dragFrame.current);
+        dragFrame.current = null;
+      }
+      pendingDrag.current = null;
+      dragGuides.current = null;
+      dragSections.current = null;
+
       const point = pointerOf(event);
       const target = point ? layerRowAt(point.x, point.y) : null;
       setDropLayerId(null);
@@ -1375,13 +1544,28 @@ function Canvas() {
       let joined = new Map<string, number>();
       let left = 0;
       if (point) {
+        // A frame that is being dragged carries its contents, so only the outermost
+        // moved nodes are re-parented – and nothing can land in its own subtree.
+        const moving = new Set(moved.keys());
+        for (const box of dragged) {
+          if (box.data.node?.parentId && moving.has(box.data.node.parentId)) moving.delete(box.id);
+        }
         for (const id of moved.keys()) {
-          const node = next.nodes.find((item) => item.id === id);
-          if (!node || node.kind === 'section') continue;
+          if (!moving.has(id)) continue;
           const byId = new Map(next.nodes.map((item) => [item.id, item]));
-          const absolute = absolutePosition(node, byId);
-          const size = nodeSize(node);
-          const hit = sectionAt(next.nodes, { x: absolute.x + size.w / 2, y: absolute.y + size.h / 2 }, { skip: id });
+          const node = byId.get(id);
+          if (!node) continue;
+          const frames = sectionFrames(next.nodes);
+          // A frame is hit-tested by its measured box, which is what the canvas drew.
+          const self = node.kind === 'section' ? frames.find((frame) => frame.id === id) : undefined;
+          const absolute = self ?? absolutePosition(node, byId);
+          const size = self ? { w: self.w, h: self.h } : nodeSize(node);
+          const forbidden = node.kind === 'section' ? descendantNodeIds(next.nodes, id) : new Set<string>();
+          const hit = sectionAtFrames(
+            frames,
+            { x: absolute.x + size.w / 2, y: absolute.y + size.h / 2 },
+            { skip: new Set([id, ...forbidden]) },
+          );
           if ((hit ?? null) === (node.parentId ?? null)) continue;
           next = setNodeSection(next, id, hit);
           if (hit) joined = joined.set(hit, (joined.get(hit) ?? 0) + 1);
@@ -1413,22 +1597,31 @@ function Canvas() {
     [doc, history, layerRowAt, notify, snapSize],
   );
 
-  const handleDrag: OnNodeDrag<AppNode> = useCallback(
-    (event, node) => {
+  /**
+   * One drag frame. Everything expensive here – the guide lines and the section
+   * frames – was prepared on drag start; the by-id map comes from the document.
+   */
+  const applyDrag = useCallback(
+    (event: PointerEventLike, node: AppNode) => {
       const point = pointerOf(event);
       const target = point ? layerRowAt(point.x, point.y) : null;
       setDropLayerId((current) => (current === target ? current : target));
 
-      const docNode = doc?.nodes.find((item) => item.id === node.id);
+      const docNode = doc ? docById.get(node.id) : undefined;
       let sectionId: string | null = null;
-      if (point && !target && doc && docNode && docNode.kind !== 'section') {
-        const byId = new Map(doc.nodes.map((item) => [item.id, item]));
-        const absolute = absolutePosition({ ...docNode, position: node.position }, byId);
-        const size = nodeSize(docNode);
-        sectionId = sectionAt(
-          doc.nodes,
+      if (point && !target && doc && docNode) {
+        // A frame is dropped into another frame by its centre, and never into a
+        // frame it already contains.
+        const frames = dragSections.current ?? sectionFrames(doc.nodes);
+        const self = docNode.kind === 'section' ? frames.find((frame) => frame.id === node.id) : undefined;
+        const absolute = self ?? absolutePosition({ ...docNode, position: node.position }, docById);
+        const size = self ? { w: self.w, h: self.h } : nodeSize(docNode);
+        const skip =
+          docNode.kind === 'section' ? new Set([node.id, ...descendantNodeIds(doc.nodes, node.id)]) : node.id;
+        sectionId = sectionAtFrames(
+          frames,
           { x: absolute.x + size.w / 2, y: absolute.y + size.h / 2 },
-          { skip: node.id },
+          { skip },
         );
       }
       setDropSectionId((current) => (current === sectionId ? current : sectionId));
@@ -1436,10 +1629,35 @@ function Canvas() {
       // A hint that the card lines up with its neighbours; five screen pixels,
       // whatever the zoom level happens to be.
       if (doc && docNode) {
-        setGuides(alignmentGuides(doc, docNode, node.position, 5 / Math.max(0.2, getZoom())));
+        const absolute = absolutePosition({ ...docNode, position: node.position }, docById);
+        const size = nodeSize(docNode);
+        const index =
+          dragGuides.current?.nodeId === node.id ? dragGuides.current.index : createGuideIndex(doc, node.id);
+        const next = guidesFromIndex(
+          index,
+          { x: absolute.x, y: absolute.y, w: size.w, h: size.h },
+          5 / Math.max(0.2, getZoom()),
+        );
+        setGuides((current) => (sameGuides(current, next) ? current : next));
       }
     },
-    [doc, getZoom, layerRowAt],
+    [doc, docById, getZoom, layerRowAt],
+  );
+
+  const handleDrag: OnNodeDrag<AppNode> = useCallback(
+    (event, node) => {
+      pendingDrag.current = { event, node };
+      if (dragFrame.current !== null) return;
+      // Pointer events arrive far more often than the screen repaints; one
+      // calculation per frame keeps a large drag off the main thread budget.
+      dragFrame.current = window.requestAnimationFrame(() => {
+        dragFrame.current = null;
+        const pending = pendingDrag.current;
+        pendingDrag.current = null;
+        if (pending) applyDrag(pending.event, pending.node);
+      });
+    },
+    [applyDrag],
   );
 
   const handleNodesDelete = useCallback(
@@ -1591,6 +1809,15 @@ function Canvas() {
     );
     entries.push(...sectionEntries);
     if (sectionEntries.length > 0) entries.push('separator');
+    if (multi) {
+      entries.push(
+        {
+          label: `Group ${selection.nodes.length} nodes into a section`,
+          onSelect: () => groupSelection(selection.nodes),
+        },
+        'separator',
+      );
+    }
     entries.push(
       {
         label: node?.kind === 'section' ? 'Bring frame to front' : 'Bring to front',
@@ -1608,7 +1835,7 @@ function Canvas() {
       },
     );
     return entries;
-  }, [menu, doc, selection.nodes, selection.edges, addNodeAt, deleteSelection, fitView, onDuplicateNode, onDeleteNodes, history, tidySection, resetSectionSize, stackNode]);
+  }, [menu, doc, selection.nodes, selection.edges, addNodeAt, deleteSelection, fitView, onDuplicateNode, onDeleteNodes, history, tidySection, resetSectionSize, stackNode, groupSelection]);
 
   const menuTitle = useMemo(() => {
     if (!menu) return '';
@@ -1651,7 +1878,13 @@ function Canvas() {
       layers: doc.layers.length,
       risk,
       subnets: new Set(doc.nodes.filter((node) => node.kind === 'section' && node.cidr).map((node) => node.cidr)).size,
-      services: new Set(hosts.flatMap((node) => node.host!.ports.filter((port) => openPorts(node.host!).some((open) => open === port)).map((port) => port.service ?? port.product).filter(Boolean))).size,
+      services: new Set(
+        hosts.flatMap((node) =>
+          openPorts(node.host!)
+            .map((port) => port.service ?? port.product)
+            .filter(Boolean) as string[],
+        ),
+      ).size,
       routes: doc.nodes.filter((node) => node.kind === 'hop' || (node.kind === 'host' && (node.depth ?? 0) > 0)).length,
       hidden: doc.nodes.filter((node) => {
         const layer = layerMap(doc.layers).get(node.layerId);
@@ -1660,19 +1893,45 @@ function Canvas() {
     };
   }, [doc, riskPolicy]);
 
+  /**
+   * The filter compiles once per query, and a bad regular expression is reported
+   * instead of thrown: the canvas keeps the last good filter, so a half-typed
+   * pattern never blanks or flashes the diagram.
+   */
+  const filterCompile = useMemo(() => compileFilter(query, { regex: filterRegex }), [query, filterRegex]);
+  const [lastGoodFilter, setLastGoodFilter] = useState<CompiledFilter>(EMPTY_FILTER);
+  useEffect(() => {
+    if (filterCompile.ok && (filterCompile.filter.raw !== lastGoodFilter.raw || filterCompile.filter.regex !== lastGoodFilter.regex)) {
+      setLastGoodFilter(filterCompile.filter);
+    }
+  }, [filterCompile, lastGoodFilter]);
+  const activeFilter = filterCompile.ok ? filterCompile.filter : lastGoodFilter;
+  const filterError = filterCompile.ok ? null : filterCompile.error;
+
+  const toggleRegex = useCallback(() => {
+    setFilterRegex((on) => {
+      const next = !on;
+      try {
+        window.localStorage.setItem(FILTER_REGEX_KEY, next ? '1' : '0');
+      } catch {
+        // A private-mode browser refuses storage; the preference just will not stick.
+      }
+      return next;
+    });
+  }, []);
+
   const graph = useMemo(
     () =>
       doc
-        ? buildRfGraph(doc, {
-            selectedNodeIds: selection.nodes,
+        ? buildRfGraph(doc, {            selectedNodeIds: selection.nodes,
             selectedEdgeIds: selection.edges,
-            query,
+            filter: activeFilter,
             onlyMatches,
             riskPolicy,
             editingNoteId: editingNote,
             dropSectionId,
             onToggle: toggleSection,
-            onSectionResize: resizeSection,
+            onResize: resizeNode,
             onSectionTidy: tidySection,
             onNoteFocus: startNoteEdit,
             onNoteChange: patchNoteText,
@@ -1680,7 +1939,7 @@ function Canvas() {
             onDelete: handleDeleteNode,
           })
         : { nodes: [], edges: [] },
-    [doc, selection, query, editingNote, dropSectionId, riskPolicy, toggleSection, resizeSection, tidySection, startNoteEdit, patchNoteText, handleDeleteNode],
+    [doc, selection, activeFilter, onlyMatches, editingNote, dropSectionId, riskPolicy, toggleSection, resizeNode, tidySection, startNoteEdit, patchNoteText, handleDeleteNode],
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState<AppNode>([]);
@@ -1761,24 +2020,6 @@ function Canvas() {
         </div>
 
         <div className="topbar__stats">
-          {stats && (
-            <div className="topbar__counts">
-              {stats.risk.levels
-                .filter((entry) => entry.ports > 0)
-                .slice(0, 1)
-                .map((entry) => (
-                  <div key={entry.level.id} className="stat" title={`${entry.level.label} ports`}>
-                    <span className="stat__value" style={{ color: entry.level.color }}>
-                      {entry.ports}
-                    </span>
-                    <span className="stat__label">{entry.level.label.toLowerCase()}</span>
-                  </div>
-                ))}
-              <Stat label="hosts" value={stats.hosts} />
-              <Stat label="open ports" value={stats.open} optional />
-              <Stat label="layers" value={stats.layers} optional />
-            </div>
-          )}
           {doc && (
             <button
               type="button"
@@ -1823,32 +2064,6 @@ function Canvas() {
           ) : (
             <SaveStatus status={workspaceStatus} visible={Boolean(doc)} onSaveCopy={exportDesign} />
           )}
-          {!SHARE_TOKEN && (
-            <button
-              type="button"
-              className="btn btn--ghost btn--bordered workspace-save"
-              disabled={!doc}
-              title="Save the diagram as a file"
-              onClick={exportDesign}
-            >
-              Save
-            </button>
-          )}
-          {!SHARE_TOKEN && account.activeProject && (
-            <button
-              type="button"
-              className={`btn btn--ghost share-button${account.activeProject.share ? ' is-on' : ''}`}
-              title={
-                account.activeProject.share
-                  ? 'This project has a share link – manage it'
-                  : 'Publish this project with a share link'
-              }
-              aria-haspopup="dialog"
-              onClick={() => setShareProjectId(account.activeProject!.id)}
-            >
-              Share
-            </button>
-          )}
           {focusName && (
             <button
               type="button"
@@ -1868,11 +2083,37 @@ function Canvas() {
                 ref={searchInputRef}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Filter ip, host, port…"
+                placeholder={filterRegex ? 'Filter · regex' : 'Filter ip, host, port…'}
                 spellCheck={false}
                 aria-label="Filter diagram"
+                aria-invalid={filterError ? true : undefined}
+                title={
+                  filterError
+                    ? `${filterError.term}: ${filterError.message}`
+                    : filterRegex
+                      ? 'Each value is a case-insensitive regular expression'
+                      : undefined
+                }
               />
-              {query.trim() ? (
+              <button
+                type="button"
+                className={`search__regex${filterRegex ? ' is-on' : ''}`}
+                aria-pressed={filterRegex}
+                title="Treat each filter value as a regular expression – prefixes still work, risk: stays a lookup"
+                aria-label="Regular expression filter"
+                onClick={toggleRegex}
+              >
+                .*
+              </button>
+              {filterError ? (
+                <span
+                  className="search__count search__count--error"
+                  role="status"
+                  title={`${filterError.term}: ${filterError.message} – the last valid filter is still applied`}
+                >
+                  !
+                </span>
+              ) : query.trim() ? (
                 <>
                   <span
                     className="search__count"
@@ -1938,16 +2179,28 @@ function Canvas() {
                     setMobileSearchOpen(false);
                   }
                 }}
-                placeholder="Filter IP, host, port…"
+                placeholder={filterRegex ? 'Filter · regex' : 'Filter IP, host, port…'}
                 spellCheck={false}
                 aria-label="Filter diagram"
+                aria-invalid={filterError ? true : undefined}
               />
-              <span className="mobile-search__count">
-                {query.trim()
-                  ? onlyMatches
-                    ? `${filterHits.matched} match`
-                    : `${filterHits.matched} of ${filterHits.total} match`
-                  : ''}
+              <button
+                type="button"
+                className={`mobile-search__regex${filterRegex ? ' is-on' : ''}`}
+                aria-pressed={filterRegex}
+                aria-label="Regular expression filter"
+                onClick={toggleRegex}
+              >
+                .*
+              </button>
+              <span className={`mobile-search__count${filterError ? ' is-error' : ''}`}>
+                {filterError
+                  ? 'invalid pattern'
+                  : query.trim()
+                    ? onlyMatches
+                      ? `${filterHits.matched} match`
+                      : `${filterHits.matched} of ${filterHits.total} match`
+                    : ''}
               </span>
               {query && (
                 <button
@@ -2010,7 +2263,11 @@ function Canvas() {
             data-tooltip={layersOpen ? 'Hide layers' : 'Show layers'}
             aria-label={layersOpen ? 'Hide layers panel' : 'Show layers panel'}
             aria-expanded={layersOpen}
-            onClick={() => setLayersOpen((open) => !open)}
+            onClick={() => {
+              // On a phone both drawers float over the canvas; only one at a time.
+              setLayersOpen((open) => !open);
+              closeInspector();
+            }}
           >
             ☰
           </button>
@@ -2022,7 +2279,10 @@ function Canvas() {
             aria-label={codePanelOpen ? 'Hide code panel' : 'Show code panel'}
             aria-expanded={codePanelOpen}
             disabled={!doc || shared.readOnly}
-            onClick={() => setCodePanelOpen((open) => !open)}
+            onClick={() => {
+              setCodePanelOpen((open) => !open);
+              closeInspector();
+            }}
           >
             {'</>'}
           </button>
@@ -2175,6 +2435,16 @@ function Canvas() {
                       Risk levels…
                     </button>
                   )}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      closeMenus();
+                      toggleDesign();
+                    }}
+                  >
+                    {design === 'basic' ? 'Detailed design' : 'Basic diagram design'}
+                  </button>
                   <div className="menu__sep" />
                   <button
                     type="button"
@@ -2217,16 +2487,52 @@ function Canvas() {
           <span className="topbar__divider" />
           <button
             type="button"
-            className="btn btn--accent"
+            className="btn btn--accent file-action"
             disabled={imports.importing}
             aria-haspopup="dialog"
             aria-expanded={fileHubOpen}
+            aria-label={doc ? 'Import, open or export' : 'Import a scan or open a design'}
+            title={doc ? 'Import, open or export' : 'Import a scan or open a design'}
             onClick={() => {
               // No diagram yet means the useful half of the panel is Import.
               openFileHub(doc ? 'export' : 'import');
             }}
           >
-            {imports.importing ? 'Importing…' : canImport ? 'Import / Export' : 'Export'}
+            {imports.importing ? (
+              'Importing…'
+            ) : canImport ? (
+              <>
+                <span className="file-action__wide">Import / Export</span>
+                <span className="file-action__narrow">File</span>
+              </>
+            ) : (
+              'Export'
+            )}
+          </button>
+
+          <button
+            type="button"
+            className={`btn btn--ghost btn--icon design-toggle${design === 'basic' ? ' is-on' : ''}`}
+            aria-label={design === 'basic' ? 'Switch to the detailed design' : 'Switch to the basic diagram design'}
+            aria-pressed={design === 'basic'}
+            title={
+              design === 'basic'
+                ? 'Detailed design – cards with icons, badges and risk colours'
+                : 'Basic design – plain boxes, connections and captions'
+            }
+            data-tooltip={design === 'basic' ? 'Detailed design' : 'Basic diagram'}
+            onClick={toggleDesign}
+          >
+            {design === 'basic' ? (
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M3 3h18v18H3z" />
+                <path d="M3 8h18M8 8v13" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M3 5h8v6H3zM13 13h8v6h-8zM11 8h3a2 2 0 0 1 2 2v3" />
+              </svg>
+            )}
           </button>
 
           <button
@@ -2254,7 +2560,7 @@ function Canvas() {
           <input
             ref={fileInput}
             type="file"
-            accept=".xml,.nmap,.json,.drawio,.dio,application/json,application/xml,text/xml"
+            accept=".xml,.nmap,.gnmap,.txt,.json,.drawio,.dio,application/json,application/xml,text/xml,text/plain"
             multiple
             hidden
             onChange={(event) => {
@@ -2276,6 +2582,30 @@ function Canvas() {
             dragging={nodeDragging}
             panelRef={layerPanelRef}
             readOnly={shared.readOnly}
+            stats={
+              stats && (
+                <>
+                  {stats.risk.levels
+                    .filter((entry) => entry.ports > 0)
+                    .slice(0, 1)
+                    .map((entry) => (
+                      <div
+                        key={entry.level.id}
+                        className="stat"
+                        title={`${entry.level.label} ports`}
+                      >
+                        <span className="stat__value" style={{ color: entry.level.color }}>
+                          {entry.ports}
+                        </span>
+                        <span className="stat__label">{entry.level.label.toLowerCase()}</span>
+                      </div>
+                    ))}
+                  <Stat label="hosts" value={stats.hosts} />
+                  <Stat label="open ports" value={stats.open} />
+                  <Stat label="layers" value={stats.layers} />
+                </>
+              )
+            }
             onSelect={setActiveLayerId}
             onToggleVisible={(id) => history.replace(toggleLayerVisible(doc, id))}
             onFocus={(id) => history.replace(setFocusedLayer(doc, id))}
@@ -2290,7 +2620,7 @@ function Canvas() {
             onMove={shiftLayer}
           />
         )}
-        {layersOpen && (
+        {doc && layersOpen && (
           <button
             type="button"
             className="mobile-drawer-backdrop"
@@ -2532,9 +2862,15 @@ function Canvas() {
               setMenu(null);
               hideHover();
             }}
-            onNodeDragStart={() => {
+            onNodeDragStart={(_event, node) => {
               setNodeDragging(true);
               hideHover();
+              // Prepared once: a drag asks for guides and a section hit on every
+              // frame, and neither answer changes while this one card moves.
+              if (doc && node) {
+                dragGuides.current = { nodeId: node.id, index: createGuideIndex(doc, node.id) };
+                dragSections.current = sectionFrames(doc.nodes);
+              }
             }}
             onNodeDragStop={handleDragStop}
             onNodeDrag={handleDrag}
@@ -2757,13 +3093,24 @@ function Canvas() {
 
         {doc && !shared.readOnly && (
           <>
-            <button
-              type="button"
-              className="mobile-drawer-backdrop mobile-inspector-backdrop"
-              aria-label="Close inspector"
-              tabIndex={-1}
-              onClick={() => setSelection({ nodes: [], edges: [] })}
-            />
+            {inspectorOpen && (
+              <button
+                type="button"
+                className="mobile-drawer-backdrop mobile-inspector-backdrop"
+                aria-label="Close inspector"
+                tabIndex={-1}
+                onClick={closeInspector}
+              />
+            )}
+            {codePanelOpen && (
+              <button
+                type="button"
+                className="mobile-drawer-backdrop mobile-code-backdrop"
+                aria-label="Close code panel"
+                tabIndex={-1}
+                onClick={() => setCodePanelOpen(false)}
+              />
+            )}
             {codePanelOpen && (
               <CodePanel
                 doc={doc}
@@ -2786,6 +3133,7 @@ function Canvas() {
               onStackNode={stackNode}
               onArrangeSection={tidySection}
               onAutoSizeSection={resetSectionSize}
+              onRegroup={regroupAll}
               onPatchEdge={(id, patch) => history.commit(patchEdge(doc, id, patch))}
               onPatchEdges={(ids, patch) =>
                 history.commit((current) => ids.reduce((acc, id) => patchEdge(acc, id, patch), current))
@@ -2794,7 +3142,7 @@ function Canvas() {
                 history.commit(removeEdges(doc, ids));
                 setSelection({ nodes: [], edges: [] });
               }}
-              onClose={() => setSelection({ nodes: [], edges: [] })}
+              onClose={closeInspector}
             />
           </>
         )}
@@ -2858,6 +3206,7 @@ function Canvas() {
               effect={imports.previewEffect}
               hasDiagram={Boolean(doc)}
               onChooseMode={imports.chooseMode}
+              onChooseGrouping={imports.chooseGrouping}
               onCancel={imports.closePreview}
               onConfirm={imports.confirmPreview}
             />

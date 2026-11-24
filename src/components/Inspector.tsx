@@ -23,6 +23,9 @@ import {
 } from '../doc/types';
 import { discoveryOnly, openPorts, type NmapHost, type NmapMac, type NmapOsMatch, type NmapPort } from '../model/types';
 import { hexToRgba, portsByLevel, type RiskPolicy } from '../doc/risk';
+import { descendantNodeIds } from '../doc/operations';
+import { DEVICE_ROLE_LABELS, classifyHost } from '../model/device';
+import { vulnColor } from '../model/vulns';
 import { IconPicker } from './IconPicker';
 
 const PATH_SAMPLES: Record<EdgePath, string> = {
@@ -58,6 +61,8 @@ type InspectorProps = {
   onStackNode: (id: string, mode: 'front' | 'forward' | 'backward' | 'back') => void;
   onArrangeSection: (id: string) => void;
   onAutoSizeSection: (id: string) => void;
+  /** Rebuild every generated subnet frame for a new grouping. */
+  onRegroup: (grouping: { ipv4?: number; ipv6?: number } | undefined) => void;
   onClose: () => void;
 };
 
@@ -321,6 +326,13 @@ function PortsEditor({ ports, onChange }: { ports: NmapPort[]; onChange: (ports:
               onChange={(event) => patch(index, { version: event.target.value || undefined })}
             />
           </div>
+          {(port.previousState || port.lastSeen) && (
+            <p className="port-editor__history">
+              {port.previousState && port.previousState !== port.state ? `was ${port.previousState}` : null}
+              {port.previousState && port.previousState !== port.state && port.lastSeen ? ' · ' : null}
+              {port.lastSeen ? `last seen ${new Date(port.lastSeen).toLocaleString()}` : null}
+            </p>
+          )}
         </div>
       ))}
       <button
@@ -345,15 +357,20 @@ function NodeDetails({
   onStackNode,
   onArrangeSection,
   onAutoSizeSection,
+  onRegroup,
   onClose,
 }: InspectorProps & { node: DiagramNode }) {
   const [iconOpen, setIconOpen] = useState(false);
   const host = node.host ?? emptyHostData(node.id);
   const path = flattenLayers(doc.layers);
   const sections = doc.nodes.filter((item) => item.kind === 'section' && item.id !== node.id);
+  // A frame cannot be moved into itself or into one of the frames it holds.
+  const contained = node.kind === 'section' ? descendantNodeIds(doc.nodes, node.id) : new Set<string>();
+  const containers = sections.filter((section) => !contained.has(section.id));
   const open = openPorts(host);
   const risks = portsByLevel(host, riskPolicy);
   const scripts = [...host.scripts, ...host.ports.flatMap((port) => port.scripts)];
+  const profile = classifyHost(node.host);
   const patchHost = (patch: Partial<NmapHost>) => onPatchNode(node.id, { host: { ...host, ...patch } });
 
   return (
@@ -422,8 +439,8 @@ function NodeDetails({
           </select>
         </Field>
 
-        {(node.kind === 'host' || node.kind === 'note') && (
-          <Field label="Section">
+        {(node.kind === 'host' || node.kind === 'note' || node.kind === 'section') && (
+          <Field label={node.kind === 'section' ? 'Section inside' : 'Section'}>
             <select
               className="input"
               value={node.parentId ?? ''}              aria-label="Section"
@@ -431,12 +448,18 @@ function NodeDetails({
               onChange={(event) => onSetSection(node.id, event.target.value || null)}
             >
               <option value="">No section (free on canvas)</option>
-              {sections.map((section) => (
+              {containers.map((section) => (
                 <option key={section.id} value={section.id}>
                   {nodeTitle(section)}
                 </option>
               ))}
             </select>
+            {node.kind === 'section' && (
+              <p className="inspector__note">
+                A section can hold other sections: nest frames to build a bigger one, or drag a frame onto
+                another on the canvas.
+              </p>
+            )}
           </Field>
         )}
 
@@ -491,6 +514,26 @@ function NodeDetails({
               placeholder="10.0.0.0/24"
               onChange={(event) => onPatchNode(node.id, { cidr: event.target.value })}
             />
+          </Field>
+        )}
+
+        {node.kind === 'section' && (
+          <Field label="Regroup all subnet frames">
+            <select
+              className="input"
+              aria-label="Regroup all subnet frames"
+              value={doc.grouping?.ipv4 === undefined ? 'auto' : String(doc.grouping.ipv4)}
+              onChange={(event) =>
+                onRegroup(event.target.value === 'auto' ? undefined : { ipv4: Number(event.target.value) })
+              }
+            >
+              <option value="auto">Automatic – the scan's range, else /24</option>
+              {[16, 20, 22, 24, 25, 26, 28].map((prefix) => (
+                <option key={prefix} value={prefix}>
+                  /{prefix} per frame
+                </option>
+              ))}
+            </select>
           </Field>
         )}
 
@@ -614,6 +657,13 @@ function NodeDetails({
               </p>
             )}
 
+            {(host.seenAt || host.scanFile) && (
+              <p className="inspector__note">
+                Last seen {host.seenAt ? new Date(host.seenAt).toLocaleString() : 'in this diagram'}
+                {host.scanFile ? ` in ${host.scanFile}` : ''}.
+              </p>
+            )}
+
             <Field label="Addresses">
               <ListEditor
                 name="Address"
@@ -732,6 +782,35 @@ function NodeDetails({
             <Field label="Ports">
               <PortsEditor ports={host.ports} onChange={(ports) => patchHost({ ports })} />
             </Field>
+
+            {profile.role && (
+              <p className="inspector__note">
+                Role: <strong>{DEVICE_ROLE_LABELS[profile.role]}</strong>
+                {profile.roleEvidence ? ` – ${profile.roleEvidence.detail}` : ''}
+              </p>
+            )}
+
+            {(host.vulns?.length ?? 0) > 0 && (
+              <>
+                <h3 className="inspector__section">
+                  Findings <span>{host.vulns?.length ?? 0}</span>
+                </h3>
+                <ul className="inspector__findings">
+                  {(host.vulns ?? []).map((vuln) => (
+                    <li key={vuln.id}>
+                      <strong className="mono" style={{ color: vulnColor(vuln.severity) }}>
+                        {vuln.id}
+                      </strong>
+                      <span>
+                        {vuln.cvss !== undefined ? `${vuln.cvss} · ` : ''}
+                        {vuln.severity}
+                        {vuln.title ? ` · ${vuln.title}` : ''}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
 
             {scripts.length > 0 && (
               <>

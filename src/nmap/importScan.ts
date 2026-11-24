@@ -1,4 +1,4 @@
-import { runImport, type ImportRequest, type ImportResponse } from './runImport';
+import type { ImportRequest, ImportResponse } from './runImport';
 
 /**
  * Runs an import in a worker so the canvas keeps painting while a big scan is
@@ -27,9 +27,16 @@ const cancelled = () => {
 
 let counter = 0;
 
-function inline(request: ImportRequest, signal?: AbortSignal): Promise<ImportResponse> {
-  if (signal?.aborted) return Promise.reject(cancelled());
-  return Promise.resolve().then(() => runImport(request));
+/**
+ * The fallback path, loaded on demand: the worker owns the real import, so the
+ * main bundle should not ship the XML parser for a case that only happens when a
+ * worker cannot start at all.
+ */
+async function inline(request: ImportRequest, signal?: AbortSignal): Promise<ImportResponse> {
+  if (signal?.aborted) throw cancelled();
+  const { runImport } = await import('./runImport');
+  if (signal?.aborted) throw cancelled();
+  return runImport(request);
 }
 
 function inWorker(request: ImportRequest, signal?: AbortSignal): Promise<ImportResponse> {

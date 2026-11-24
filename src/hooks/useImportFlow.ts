@@ -3,9 +3,11 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import type { DiagramDoc } from '../doc/types';
 import type { NmapScan } from '../model/types';
 import type { ImportEffect, ImportMode } from '../doc/docFromScan';
+import type { HostGrouping } from '../graph/layout';
+import type { ScanFormat } from '../nmap/scanFormat';
 import type { DesignFile, DesignRepair } from '../doc/designFile';
-import { looksLikeJson, readDesignFile } from '../doc/designFile';
-import { looksLikeDrawio, readDrawioFile } from '../doc/drawioFile';
+import { looksLikeDrawio, looksLikeJson } from '../doc/formatSniff';
+import { readDesignFile } from '../doc/designFile';
 import { LARGE_SCAN_BYTES, MAX_SCAN_BYTES, importScan } from '../nmap/importScan';
 import type { ImportSuccess } from '../nmap/runImport';
 
@@ -21,6 +23,12 @@ export type ImportPreview = {
   previewedMode: ImportMode;
   /** Kept so picking another mode re-runs the import in the worker. */
   text: string;
+  /** What the merge would do that is worth reading before committing. */
+  warnings: string[];
+  /** Section grouping chosen in the preview; absent keeps the diagram's own. */
+  grouping?: HostGrouping;
+  /** Which nmap output shape was read. */
+  format: ScanFormat;
 };
 
 export type DesignPreviewRequest = {
@@ -81,6 +89,46 @@ export function useImportFlow({
     setPreview((current) => (current ? { ...current, mode } : current));
   }, []);
 
+  /**
+   * Regrouping changes the frames, so the document has to be rebuilt: it runs the
+   * same worker path as the first pass and swaps the previewed document in place.
+   */
+  const chooseGrouping = useCallback(
+    (grouping: HostGrouping | undefined) => {
+      const current = preview;
+      if (!current) return;
+      setPreview({ ...current, grouping });
+      void (async () => {
+        const result = await importScan({
+          text: current.text,
+          fileName: current.fileName,
+          mode: current.mode,
+          doc,
+          grouping,
+        });
+        if (!result.ok) {
+          notify(result.error);
+          return;
+        }
+        setPreview((existing) =>
+          existing && existing.text === current.text && existing.fileName === current.fileName
+            ? {
+                ...existing,
+                scan: result.scan,
+                effects: result.effects,
+                doc: result.doc,
+                previewedMode: existing.mode,
+                warnings: result.warnings,
+                grouping: result.doc.grouping,
+                format: result.format,
+              }
+            : existing,
+        );
+      })();
+    },
+    [doc, notify, preview],
+  );
+
   const tooLarge = useCallback(
     (file: File) => {
       if (file.size <= MAX_SCAN_BYTES) return false;
@@ -105,6 +153,9 @@ export function useImportFlow({
         return true;
       }
       if (looksLikeDrawio(text)) {
+        // The draw.io reader carries the XML parser; load it only for a file that
+        // actually is one, so a normal session never downloads it.
+        const { readDrawioFile } = await import('../doc/drawioFile');
         const result = await readDrawioFile(text, fileName);
         if (!result.ok) {
           notify(result.reason);
@@ -212,6 +263,9 @@ export function useImportFlow({
           doc: result.doc,
           previewedMode: mode,
           text,
+          warnings: result.warnings,
+          grouping: result.doc.grouping,
+          format: result.format,
         });
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') return;
@@ -241,6 +295,8 @@ export function useImportFlow({
         added: current.effects[current.mode].added,
         gone: current.effects[current.mode].stale,
         layerId: null,
+        warnings: current.warnings,
+        format: current.format,
       });
       return;
     }
@@ -251,6 +307,7 @@ export function useImportFlow({
         fileName: current.fileName,
         mode: current.mode,
         doc,
+        grouping: current.grouping,
       });
       if (!result.ok) notify(result.error);
       else apply(result);
@@ -269,6 +326,7 @@ export function useImportFlow({
     importFiles,
     importText,
     chooseMode,
+    chooseGrouping,
     closePreview,
     confirmPreview,
     cancelImport,

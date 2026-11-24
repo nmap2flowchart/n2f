@@ -12,6 +12,8 @@ import {
 } from '../doc/types';
 import { absolutePosition, measureSection, nodeSize } from '../doc/measure';
 import { nodeRisk, type NodeRisk, type RiskPolicy } from '../doc/risk';
+import { classifyHost, type DeviceEvidence, type DeviceRole } from '../model/device';
+import type { VulnRef } from '../model/types';
 
 /**
  * The drawing decisions every renderer shares.
@@ -37,6 +39,13 @@ export type SceneNode = {
   z: number;
   /** Resolved risk for host cards, `null` for anything else. */
   risk: NodeRisk | null;
+  /** What the box does, when the scan proves it. */
+  role?: DeviceRole;
+  roleEvidence?: DeviceEvidence;
+  /** Findings the scan's scripts reported, worst first. */
+  vulns: VulnRef[];
+  /** The worst finding, for the card's badge and the picture's chip. */
+  worstVuln: VulnRef | null;
 };
 
 export type SceneEdge = {
@@ -63,6 +72,8 @@ export type Scene = {
 /**
  * Layers stack in rows (later rows draw over earlier ones), sections sit in the
  * lower band of their layer and cards in the upper band, and `z` orders peers.
+ * A frame inside a frame sits one step above the frame around it, or the outer
+ * fill would paint over the inner one.
  * The canvas feeds these numbers to React Flow's `zIndex`; the exporters sort by
  * them, so a card moved to the front is in front in the picture too.
  */
@@ -70,12 +81,33 @@ export function sceneStack(doc: DiagramDoc): (node: DiagramNode) => number {
   const rank = new Map<string, number>();
   flattenLayers(doc.layers).forEach(({ layer }, index) => rank.set(layer.id, index));
   const layerCount = Math.max(1, doc.layers.length);
+  const depths = sectionDepths(doc.nodes);
 
   return (node: DiagramNode) => {
     const base = (layerCount - (rank.get(node.layerId) ?? 0)) * 10_000;
-    const band = node.kind === 'section' ? 0 : 1000;
-    return base + band + (node.z ?? 0);
+    if (node.kind !== 'section') return base + 1000 + (node.z ?? 0);
+    return base + Math.min(depths.get(node.id) ?? 0, SECTION_DEPTH_STEPS) * SECTION_DEPTH_STEP + (node.z ?? 0);
   };
+}
+
+/** Nested frames stay under the cards: 15 levels of 60 still leave the 1000 band. */
+const SECTION_DEPTH_STEP = 60;
+const SECTION_DEPTH_STEPS = 15;
+
+/** How many sections enclose each frame; 0 for a top-level frame. One pass. */
+function sectionDepths(nodes: DiagramNode[]): Map<string, number> {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const depths = new Map<string, number>();
+  const resolve = (node: DiagramNode, guard = 0): number => {
+    const known = depths.get(node.id);
+    if (known !== undefined) return known;
+    const parent = node.parentId ? byId.get(node.parentId) : undefined;
+    const depth = parent?.kind === 'section' && guard < 32 ? resolve(parent, guard + 1) + 1 : 0;
+    depths.set(node.id, depth);
+    return depth;
+  };
+  for (const node of nodes) if (node.kind === 'section') resolve(node);
+  return depths;
 }
 
 export function buildScene(doc: DiagramDoc, riskPolicy: RiskPolicy): Scene {
@@ -93,29 +125,50 @@ export function buildScene(doc: DiagramDoc, riskPolicy: RiskPolicy): Scene {
   const byId = new Map(doc.nodes.map((node) => [node.id, node]));
   const stackOf = sceneStack(doc);
 
+  // A frame inside a collapsed or hidden frame is not on the canvas either – at any
+  // depth, which is what used to make a collapsed section draw its nested frames.
+  const drawn = new Map<string, boolean>();
+  const visiting = new Set<string>();
+  const isDrawn = (node: DiagramNode): boolean => {
+    const known = drawn.get(node.id);
+    if (known !== undefined) return known;
+    let result = drawable(node);
+    const parent = node.parentId ? byId.get(node.parentId) : undefined;
+    if (result && parent?.kind === 'section' && !visiting.has(node.id)) {
+      visiting.add(node.id);
+      result = !parent.collapsed && isDrawn(parent);
+      visiting.delete(node.id);
+    }
+    drawn.set(node.id, result);
+    return result;
+  };
+
   const ids = new Set<string>();
   for (const node of doc.nodes) {
-    if (node.kind !== 'section') continue;
-    if (drawable(node)) ids.add(node.id);
+    if (isDrawn(node)) ids.add(node.id);
   }
-  for (const node of doc.nodes) {
-    if (node.kind === 'section') continue;
-    if (node.parentId) {
-      const parent = byId.get(node.parentId);
-      // A card inside a collapsed or hidden section is not on the canvas at all.
-      if (parent?.kind === 'section' && (parent.collapsed || !ids.has(parent.id))) continue;
-    }
-    if (drawable(node)) ids.add(node.id);
-  }
+
+  // Measured from the frames and cards that are actually drawn, bottom-up, so a
+  // frame fits what is inside it whether that is a card or a nested frame.
+  const measured = new Map<string, { w: number; h: number }>();
+  const sizeOf = (node: DiagramNode, guard = 0): { w: number; h: number } => {
+    if (node.kind !== 'section') return nodeSize(node);
+    const known = measured.get(node.id);
+    if (known) return known;
+    const children = (childrenOf.get(node.id) ?? []).filter((child) => ids.has(child.id));
+    const size = measureSection(node, children, (child) =>
+      guard < 8 ? sizeOf(child, guard + 1) : nodeSize(child),
+    );
+    measured.set(node.id, size);
+    return size;
+  };
 
   const entry = (node: DiagramNode): SceneNode => {
     const all = childrenOf.get(node.id) ?? [];
     const children = all.filter((child) => ids.has(child.id));
-    const size =
-      node.kind === 'section'
-        ? measureSection(node, children)
-        : nodeSize(node);
-    const position = absolutePosition(node, byId);
+    const size = node.kind === 'section' ? sizeOf(node) : nodeSize(node);    const position = absolutePosition(node, byId);
+    const profile = node.kind === 'host' ? classifyHost(node.host) : undefined;
+    const vulns = node.host?.vulns ?? [];
     return {
       node,
       box: { x: position.x, y: position.y, w: size.w, h: size.h },
@@ -123,10 +176,19 @@ export function buildScene(doc: DiagramDoc, riskPolicy: RiskPolicy): Scene {
       childCount: all.length,
       z: stackOf(node),
       risk: node.kind === 'host' ? nodeRisk(node.host, riskPolicy) : null,
+      role: profile?.role,
+      roleEvidence: profile?.roleEvidence,
+      vulns,
+      worstVuln: vulns[0] ?? null,
     };
   };
 
-  const sections = doc.nodes.filter((node) => node.kind === 'section' && ids.has(node.id)).map(entry);
+  // Outer frames first, so an exporter that paints in document order never covers a
+  // nested frame with the one around it.
+  const sections = doc.nodes
+    .filter((node) => node.kind === 'section' && ids.has(node.id))
+    .map(entry)
+    .sort((a, b) => a.z - b.z || b.box.w * b.box.h - a.box.w * a.box.h);
   const cards = doc.nodes
     .filter((node) => node.kind !== 'section' && ids.has(node.id))
     .map(entry)

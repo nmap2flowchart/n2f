@@ -3,6 +3,7 @@ import {
   LAYER_COLORS,
   MAIN_LAYER,
   NOTES_LAYER,
+  sectionNodeId,
   type DiagramDoc,
   type DiagramEdge,
   type DiagramNode,
@@ -10,7 +11,20 @@ import {
   type Layer,
 } from './types';
 import type { NmapHost } from '../model/types';
-import { absolutePosition, nodeSize, SECTION_HEADER, SECTION_PAD, slotInSection } from './measure';
+import {
+  absolutePosition,
+  measureSection,
+  nodeSize,
+  nodeSizer,
+  SECTION_HEADER,
+  SECTION_PAD,
+  slotInSection,
+  slotsInSection,
+} from './measure';
+import { compareIp, subnetOf, type HostGrouping } from '../graph/layout';
+
+/** `10.0.0.0/24` → `10.0.0.0`, so groups sort by address rather than by text. */
+const networkOf = (cidr: string) => cidr.slice(0, cidr.lastIndexOf('/'));
 
 let counter = 0;
 const uniqueId = (prefix: string) => {
@@ -114,15 +128,8 @@ export function removeNodes(doc: DiagramDoc, ids: string[]): DiagramDoc {
   for (const node of doc.nodes) {
     if (doomed.has(node.id)) continue;
     if (node.parentId && doomed.has(node.parentId)) {
-      const parent = byId.get(node.parentId);
-      nodes.push({
-        ...node,
-        parentId: null,
-        position: {
-          x: node.position.x + (parent?.position.x ?? 0),
-          y: node.position.y + (parent?.position.y ?? 0),
-        },
-      });
+      // An orphan keeps the place it had on the canvas, whatever depth it sat at.
+      nodes.push({ ...node, parentId: null, position: absolutePosition(node, byId) });
       continue;
     }
     nodes.push(node);
@@ -183,31 +190,41 @@ export function setNodeSection(
 ): DiagramDoc {
   const byId = new Map(doc.nodes.map((node) => [node.id, node]));
   const node = byId.get(nodeId);
-  if (!node || node.kind === 'section') return doc;
+  if (!node) return doc;
   if ((node.parentId ?? null) === sectionId) return doc;
 
   const target = sectionId ? byId.get(sectionId) : null;
   if (sectionId && target?.kind !== 'section') return doc;
+  // A frame cannot move into itself or into anything it already contains.
+  if (target && (target.id === node.id || descendantNodeIds(doc.nodes, node.id).has(target.id))) return doc;
 
   const absolute = absolutePosition(node, byId);
+  const sizeOf = nodeSizer(doc.nodes);
   const siblings = target ? doc.nodes.filter((item) => item.parentId === target.id && item.id !== nodeId) : [];
 
   let position = absolute;
   if (target) {
     position =
       placement === 'append'
-        ? slotInSection(target, siblings, nodeSize(node))
+        ? slotInSection(target, siblings, sizeOf(node))
         : {
             x: Math.max(SECTION_PAD, absolute.x - target.position.x),
             y: Math.max(SECTION_HEADER + 8, absolute.y - target.position.y),
           };
   }
 
+  // A frame carries its contents: everything inside it joins the new layer too, or
+  // the cards would be on a layer the frame around them is not.
+  const subtree = node.kind === 'section' ? descendantNodeIds(doc.nodes, node.id) : new Set<string>();
+
   return {
     ...doc,
     nodes: doc.nodes.map((item) => {
       if (item.id === nodeId) {
         return { ...item, parentId: target?.id ?? null, position, layerId: target?.layerId ?? item.layerId };
+      }
+      if (subtree.has(item.id) && target) {
+        return { ...item, layerId: target.layerId };
       }
       if (target && item.id === target.id) {
         return item.collapsed || item.manualSize ? { ...item, collapsed: false, manualSize: false } : item;
@@ -217,8 +234,212 @@ export function setNodeSection(
   };
 }
 
+/** Every node inside a section, at any depth. */
+export function descendantNodeIds(nodes: DiagramNode[], id: string): Set<string> {
+  const childrenOf = new Map<string, string[]>();
+  for (const node of nodes) {
+    if (!node.parentId) continue;
+    const bucket = childrenOf.get(node.parentId);
+    if (bucket) bucket.push(node.id);
+    else childrenOf.set(node.parentId, [node.id]);
+  }
+  const out = new Set<string>();
+  const walk = (parentId: string, guard = 0) => {
+    if (guard > 32) return;
+    for (const childId of childrenOf.get(parentId) ?? []) {
+      if (out.has(childId)) continue;
+      out.add(childId);
+      walk(childId, guard + 1);
+    }
+  };
+  walk(id);
+  return out;
+}
+
+/**
+ * Wrap nodes in a new section – how a user makes a bigger frame out of frames that
+ * already exist. The new frame encloses them on the canvas, keeps them where they
+ * were, and takes the layer of its first member.
+ */
+export function groupIntoSection(
+  doc: DiagramDoc,
+  ids: string[],
+  label = 'New section',
+): { doc: DiagramDoc; id: string } | null {
+  const members = doc.nodes.filter((node) => ids.includes(node.id));
+  if (members.length === 0) return null;
+
+  const byId = new Map(doc.nodes.map((node) => [node.id, node]));
+  const sizeOf = nodeSizer(doc.nodes);
+  const boxes = members.map((node) => {
+    const absolute = absolutePosition(node, byId);
+    return { node, x: absolute.x, y: absolute.y, ...sizeOf(node) };
+  });
+
+  const left = Math.min(...boxes.map((box) => box.x));
+  const top = Math.min(...boxes.map((box) => box.y));
+  const right = Math.max(...boxes.map((box) => box.x + box.w));
+  const bottom = Math.max(...boxes.map((box) => box.y + box.h));
+
+  // The group sits where the selection sits: one parent if they all shared one, so
+  // grouping inside a frame stays inside that frame.
+  const parents = new Set(members.map((node) => node.parentId ?? null));
+  const parentId = parents.size === 1 ? [...parents][0] : null;
+  const parent = parentId ? byId.get(parentId) : undefined;
+  const parentOrigin = parent ? absolutePosition(parent, byId) : { x: 0, y: 0 };
+  const layerId = members[0].layerId;
+
+  const section: DiagramNode = {
+    id: uniqueId('section'),
+    kind: 'section',
+    layerId,
+    position: {
+      x: left - SECTION_PAD - parentOrigin.x,
+      y: top - SECTION_HEADER - 12 - parentOrigin.y,
+    },
+    label,
+    icon: 'server',
+    ...(parentId ? { parentId } : {}),
+  };
+
+  const memberIds = new Set(members.map((node) => node.id));
+  // Everything already inside a member frame travels with it: only the outermost
+  // members are re-parented, or a nested card would be lifted out of its frame.
+  for (const box of boxes) {
+    if (box.node.parentId && memberIds.has(box.node.parentId)) memberIds.delete(box.node.id);
+  }
+
+  // A hand-sized frame that cannot hold the new group gives up its size, the same
+  // way dropping a card into it does.
+  const parentSize = parent?.manualSize ? sizeOf(parent) : null;
+  const overflow =
+    parentSize !== null &&
+    (right - parentOrigin.x > parentSize.w - SECTION_PAD || bottom - parentOrigin.y > parentSize.h - SECTION_PAD);
+
+  return {
+    id: section.id,
+    doc: {
+      ...doc,
+      nodes: [
+        ...doc.nodes.map((node) => {
+          if (overflow && node.id === parentId) return { ...node, manualSize: false, size: undefined };
+          if (!memberIds.has(node.id)) return node;
+          const absolute = absolutePosition(node, byId);
+          return {
+            ...node,
+            parentId: section.id,
+            layerId,
+            position: { x: absolute.x - (left - SECTION_PAD), y: absolute.y - (top - SECTION_HEADER - 12) },
+          };
+        }),
+        section,
+      ],
+    },
+  };
+}
+
+/** A note is resized by hand, so its size is its own rather than a constant. */
+export function setNoteSize(doc: DiagramDoc, id: string, size: { w: number; h: number } | null): DiagramDoc {
+  const node = doc.nodes.find((item) => item.id === id);
+  if (!node || node.kind !== 'note') return doc;
+  if (!size) return patchNode(doc, id, { size: undefined });
+  return patchNode(doc, id, { size: { w: Math.round(size.w), h: Math.round(size.h) } });
+}
+
 export function patchEdge(doc: DiagramDoc, id: string, patch: Partial<DiagramEdge>): DiagramDoc {
   return { ...doc, edges: doc.edges.map((edge) => (edge.id === id ? { ...edge, ...patch } : edge)) };
+}
+
+const MAX_FRAME_ROW = 1760;
+const FRAME_GAP = 36;
+
+/**
+ * Rebuild the generated subnet frames for a new grouping.
+ *
+ * Only frames the importer drew are touched: a section someone renamed, resized by
+ * hand or created themselves is left exactly where it is, and so are the cards in
+ * it. Cards that move to a different group keep their card and its data; only the
+ * frame and the slot inside it change, and the whole thing is one undoable step.
+ */
+export function regroupSections(doc: DiagramDoc, grouping?: HostGrouping): DiagramDoc {
+  const generated = new Set(
+    doc.nodes
+      .filter((node) => node.kind === 'section' && node.cidr && !node.label && !node.manualSize)
+      .map((node) => node.id),
+  );
+  const movable = doc.nodes.filter(
+    (node) => node.kind === 'host' && node.parentId && generated.has(node.parentId) && node.host,
+  );
+  if (movable.length === 0) return grouping ? { ...doc, grouping } : doc;
+
+  const frames = doc.nodes.filter((node) => generated.has(node.id));
+  const anchorX = Math.min(...frames.map((node) => node.position.x));
+  const anchorY = Math.min(...frames.map((node) => node.position.y));
+
+  const groups = new Map<string, DiagramNode[]>();
+  for (const node of movable) {
+    const cidr = subnetOf(node.host?.ip || node.address || '', grouping);
+    const bucket = groups.get(cidr);
+    if (bucket) bucket.push(node);
+    else groups.set(cidr, [node]);
+  }
+  const ordered = [...groups.entries()].sort(([a], [b]) => compareIp(networkOf(a), networkOf(b)));
+
+  const nextById = new Map<string, DiagramNode>();
+  const rebuilt: DiagramNode[] = [];
+  let cursorX = anchorX;
+  let cursorY = anchorY;
+  let rowHeight = 0;
+
+  for (const [cidr, members] of ordered) {
+    const previous = frames.find((node) => node.cidr === cidr);
+    const sectionId = previous?.id ?? sectionNodeId(cidr);
+    const section: DiagramNode = {
+      id: sectionId,
+      kind: 'section',
+      layerId: previous?.layerId ?? members[0].layerId,
+      position: { x: cursorX, y: cursorY },
+      cidr,
+      icon: previous?.icon ?? 'server',
+      ...(previous?.accent ? { accent: previous.accent } : {}),
+    };
+
+    // A card that is already in this frame keeps the place the user gave it; a card
+    // arriving from another frame gets the first free slot.
+    const staying = members.filter((node) => node.parentId === sectionId);
+    const arriving = members.filter((node) => node.parentId !== sectionId);
+    const slots = slotsInSection(section, staying, arriving.length);
+
+    for (const node of staying) {
+      nextById.set(node.id, { ...node, parentId: sectionId, layerId: section.layerId });
+    }
+    arriving.forEach((node, index) => {
+      nextById.set(node.id, { ...node, parentId: sectionId, layerId: section.layerId, position: slots[index] });
+    });
+
+    const size = measureSection(
+      { ...section, manualSize: false, collapsed: false },
+      members.map((node) => nextById.get(node.id) ?? node),
+    );
+    rebuilt.push(section);
+    cursorX += size.w + FRAME_GAP;
+    rowHeight = Math.max(rowHeight, size.h);
+    if (cursorX - anchorX > MAX_FRAME_ROW) {
+      cursorX = anchorX;
+      cursorY += rowHeight + FRAME_GAP;
+      rowHeight = 0;
+    }
+  }
+
+  return {
+    ...doc,
+    ...(grouping ? { grouping } : {}),
+    nodes: [
+      ...doc.nodes.filter((node) => !generated.has(node.id) && !nextById.has(node.id)),
+      ...rebuilt,
+      ...movable.map((node) => nextById.get(node.id) ?? node),
+    ],
+  };
 }
 
 export function removeEdges(doc: DiagramDoc, ids: string[]): DiagramDoc {
@@ -415,8 +636,9 @@ export function arrangeSection(doc: DiagramDoc, sectionId: string, columns?: num
   if (children.length === 0) return doc;
 
   const cols = Math.max(1, Math.min(columns ?? Math.ceil(Math.sqrt(children.length)), Math.max(1, children.length)));
-  const cellW = Math.max(...children.map((child) => nodeSize(child).w));
-  const cellH = Math.max(...children.map((child) => nodeSize(child).h));
+  const sizeOf = nodeSizer(doc.nodes);
+  const cellW = Math.max(...children.map((child) => sizeOf(child).w));
+  const cellH = Math.max(...children.map((child) => sizeOf(child).h));
   const positions = new Map<string, { x: number; y: number }>();
   children.forEach((child, index) => {
     positions.set(child.id, {

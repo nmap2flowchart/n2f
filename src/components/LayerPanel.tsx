@@ -39,6 +39,8 @@ type LayerPanelProps = {
   /** A view-only share link: only selecting and focusing stay interactive. */
   readOnly?: boolean;
   panelRef?: React.Ref<HTMLElement>;
+  /** Headline counts for the diagram, shown under the hint – owned by the caller. */
+  stats?: React.ReactNode;
 };
 
 export function LayerPanel({
@@ -58,6 +60,7 @@ export function LayerPanel({
   onMove,
   readOnly = false,
   panelRef,
+  stats,
 }: LayerPanelProps) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
@@ -349,6 +352,8 @@ export function LayerPanel({
               ? 'Drop the node on a layer to move it there.'
               : 'Drag nodes from the canvas onto a layer to move them, or click a layer to make it active.'}
       </p>
+
+      {stats && <div className="layer-panel__stats">{stats}</div>}
 
       <footer className="layer-panel__foot">
         <a

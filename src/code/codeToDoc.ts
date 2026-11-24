@@ -1,4 +1,4 @@
-import { detectIcon } from '../icons/registry';
+import { detectIcon } from '../icons/detect';
 import { absolutePosition, measureSection, nodeSize } from '../doc/measure';
 import { emptyHost } from '../doc/operations';
 import { RISK_COLORS, type RiskLevel, type RiskPolicy } from '../doc/risk';
@@ -293,6 +293,36 @@ export function applyLayerCode(
     created.push(buildNode(item, placed, id, layerId, position, parentId));
   }
 
+  // A card rebuilt from code is still the same device: keep the scan history the
+  // DSL does not spell out, so editing code does not erase when a port was first
+  // seen (the same deliberate gap as resolved risk colours).
+  const previousHosts = new Map<string, NmapHost>();
+  for (const node of doc.nodes) {
+    if (doomed.has(node.id) && node.host) previousHosts.set(node.host.ip || node.id, node.host);
+  }
+  for (const node of created) {
+    if (!node.host) continue;
+    const before = previousHosts.get(node.host.ip || node.id);
+    if (!before) continue;
+    const previousPorts = new Map(before.ports.map((port) => [`${port.protocol}/${port.port}`, port]));
+    node.host = {
+      ...node.host,
+      seenAt: node.host.seenAt ?? before.seenAt,
+      scanFile: node.host.scanFile ?? before.scanFile,
+      vulns: node.host.vulns ?? before.vulns,
+      ports: node.host.ports.map((port) => {
+        const old = previousPorts.get(`${port.protocol}/${port.port}`);
+        if (!old) return port;
+        return {
+          ...port,
+          firstSeen: old.firstSeen ?? port.firstSeen,
+          lastSeen: port.lastSeen ?? old.lastSeen,
+          previousState: old.previousState,
+        };
+      }),
+    };
+  }
+
   const usedEdgeIds = new Set(keptEdges.map((edge) => edge.id));
   const nextEdgeId = uniqueFactory(usedEdgeIds);
   const createdEdges: DiagramEdge[] = [];
@@ -332,6 +362,7 @@ export function applyLayerCode(
     layers,
     nodes: [...keptNodes, ...created],
     edges: [...keptEdges, ...createdEdges],
+    ...(model.grouping !== undefined ? { grouping: model.grouping ?? undefined } : {}),
     ...(model.risk !== undefined ? { risk: model.risk === null ? null : riskPolicyFromLevels(model.risk, doc.risk) } : {}),
   };
 

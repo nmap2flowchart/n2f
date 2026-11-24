@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
 import type { WorkspaceStatus } from '../doc/workspaceStore';
 
@@ -47,23 +47,83 @@ export function SaveStatus({
   onSaveCopy: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  // A click pins the panel: it stays until the chip or somewhere else is clicked.
+  const [pinned, setPinned] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const panelId = useId();
   const wrap = useRef<HTMLDivElement>(null);
+  const hideTimer = useRef<number | null>(null);
+  const pointerInside = useRef(false);
+
+  const clearHide = useCallback(() => {
+    if (hideTimer.current !== null) {
+      window.clearTimeout(hideTimer.current);
+      hideTimer.current = null;
+    }
+  }, []);
+
+  const show = useCallback(() => {
+    clearHide();
+    setOpen(true);
+  }, [clearHide]);
+
+  /**
+   * Hovering only previews the panel, and the preview has a grace period: the
+   * pointer has to cross the gap between the chip and the panel to reach the
+   * values, and closing on that gap made the panel unreadable and its button
+   * unclickable.
+   */
+  const scheduleHide = useCallback(() => {
+    if (pinned || pointerInside.current) return;
+    clearHide();
+    hideTimer.current = window.setTimeout(() => {
+      hideTimer.current = null;
+      setOpen(false);
+    }, 220);
+  }, [clearHide, pinned]);
+
+  const dismiss = useCallback(() => {
+    clearHide();
+    setPinned(false);
+    setOpen(false);
+  }, [clearHide]);
+
+  const pin = useCallback(() => {
+    clearHide();
+    setPinned(true);
+    setOpen(true);
+  }, [clearHide, setPinned, setOpen]);
+
+  const togglePinned = useCallback(() => {
+    if (pinned) dismiss();
+    else pin();
+  }, [dismiss, pin, pinned]);
+
+  useEffect(() => () => clearHide(), [clearHide]);
 
   useEffect(() => {
     if (!open) return;
     setNow(Date.now());
     const timer = window.setInterval(() => setNow(Date.now()), 5000);
     const close = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key === 'Escape') dismiss();
     };
     window.addEventListener('keydown', close);
     return () => {
       window.clearInterval(timer);
       window.removeEventListener('keydown', close);
     };
-  }, [open]);
+  }, [open, dismiss]);
+
+  // A pinned panel is dismissed by a click anywhere outside it.
+  useEffect(() => {
+    if (!pinned) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!wrap.current?.contains(event.target as Node | null)) dismiss();
+    };
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => window.removeEventListener('pointerdown', onPointerDown, true);
+  }, [dismiss, pinned]);
 
   if (!visible) return null;
 
@@ -83,19 +143,29 @@ export function SaveStatus({
     <div
       className="save-status"
       ref={wrap}
-      onPointerEnter={() => setOpen(true)}
-      onPointerLeave={() => setOpen(false)}
+      onPointerEnter={() => {
+        pointerInside.current = true;
+        show();
+      }}
+      onPointerLeave={() => {
+        pointerInside.current = false;
+        scheduleHide();
+      }}
     >
       <button
         type="button"
         className={`save-status__chip save-status__chip--${tone}`}
-        aria-describedby={open ? panelId : undefined}
         aria-expanded={open}
+        aria-controls={open ? panelId : undefined}
         aria-label={`${label} – how this diagram is stored`}
-        onClick={() => setOpen((value) => !value)}
-        onFocus={() => setOpen(true)}
+        title={open ? 'Hide storage details' : 'Show storage details'}
+        onClick={togglePinned}
+        onFocus={show}
         onBlur={(event) => {
-          if (!wrap.current?.contains(event.relatedTarget as Node | null)) setOpen(false);
+          // Focus moving into the panel keeps it; focus leaving the chip while the
+          // pointer is elsewhere closes a hover preview.
+          if (wrap.current?.contains(event.relatedTarget as Node | null)) return;
+          scheduleHide();
         }}
       >
         <span className="save-status__dot" aria-hidden="true" />
@@ -108,7 +178,15 @@ export function SaveStatus({
       </button>
 
       {open && (
-        <div className="save-status__panel" id={panelId} role="tooltip">
+        <div
+          className="save-status__panel"
+          id={panelId}
+          role="region"
+          aria-label="How this diagram is stored"
+          onPointerDown={() => {
+            if (!pinned) pin();
+          }}
+        >
           <div className="save-status__head">
             <span className={`save-status__dot save-status__dot--${tone}`} aria-hidden="true" />
             <strong>

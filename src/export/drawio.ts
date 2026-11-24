@@ -2,6 +2,8 @@ import { edgeArrow, edgeSides, nodeSubtitle, nodeTitle, type DiagramDoc, type Di
 import { iconEmoji } from '../icons/registry';
 import { virtualPlatformOf } from '../model/device';
 import { portSummaryOr } from '../model/types';
+import { classifyHost, DEVICE_ROLE_LABELS, HIGH_VALUE_ROLES } from '../model/device';
+import { vulnColor } from '../model/vulns';
 import { nodeRisk, type RiskPolicy } from '../doc/risk';
 import { buildScene } from '../graph/scene';
 import { HOP_H, HOP_W, HOST_H, HOST_W, NOTE_H, NOTE_W, ORIGIN_H, ORIGIN_W } from '../graph/layout';
@@ -94,6 +96,17 @@ function hostLabel(node: DiagramNode, riskPolicy: RiskPolicy): string {
   if (ports && ports !== 'no open ports') {
     lines.push(`<font color="${risk?.color ?? '#2563eb'}">${esc(ports)}</font>`);
   } else if (node.host) lines.push('<font color="#8b97a8">no open ports</font>');
+  // Role and findings travel with the card, so the picture says what the box does
+  // and what the scan found on it.
+  const profile = classifyHost(node.host);
+  const role = profile.role && HIGH_VALUE_ROLES.has(profile.role) ? DEVICE_ROLE_LABELS[profile.role] : '';
+  const vulns = node.host?.vulns ?? [];
+  const flags = [role, vulns.length > 0 ? `${vulns.length} CVE` : ''].filter(Boolean).join(' · ');
+  if (flags) {
+    lines.push(
+      `<font color="${vulns[0] ? vulnColor(vulns[0].severity) : '#5a6a7d'}">${esc(flags)}</font>`,
+    );
+  }
   return lines.join('<br>');
 }
 

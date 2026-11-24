@@ -17,7 +17,7 @@ export const CODE_LAYOUTS: CodeLayout[] = ['compact', 'expanded'];
 /** A line that starts with `key:` continues the statement above it. */
 const CONTINUATION = /^[A-Za-z_][\w-]*\s*:/;
 /** …except these, which are statements of their own. */
-const LINE_DIRECTIVE = /^(layer|risk)\s*:/i;
+const LINE_DIRECTIVE = /^(layer|risk|grouping)\s*:/i;
 const ATTR_START = /^([A-Za-z_][\w-]*)\s*:/;
 
 /** Attribute order inside a group follows the source, so a toggle never shuffles it. */

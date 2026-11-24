@@ -3,6 +3,21 @@ export type NmapScript = {
   output: string;
 };
 
+/** How a finding is rated, worst first. */
+export type VulnSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+
+/** One vulnerability an NSE script reported. */
+export type VulnRef = {
+  /** A CVE id when the script names one, else the script id. */
+  id: string;
+  cvss?: number;
+  severity: VulnSeverity;
+  /** The NSE script that reported it. */
+  script: string;
+  /** What the script called it, when that is more than the id. */
+  title?: string;
+};
+
 export type NmapOsClass = {
   /** nmap's own device category: router, switch, WAP, firewall, printer, phone… */
   type: string;
@@ -27,6 +42,12 @@ export type NmapPort = {
   /** CPE identifiers from `<service><cpe>`, e.g. `cpe:/o:microsoft:windows`. */
   cpe?: string[];
   scripts: NmapScript[];
+  /** ISO time of the first scan that reported this port (any state). */
+  firstSeen?: string;
+  /** ISO time of the last scan that reported it, in `state`. */
+  lastSeen?: string;
+  /** The state this port had in the scan before the one that set `state`. */
+  previousState?: string;
 };
 
 export type NmapOsMatch = {
@@ -63,18 +84,37 @@ export type NmapHost = {
   portsScanned?: boolean;
   scripts: NmapScript[];
   hops: string[];
+  /** ISO time of the scan that last confirmed this host. */
+  seenAt?: string;
+  /** The scan file that last confirmed it, shown in the inspector. */
+  scanFile?: string;
+  /** Vulnerabilities the scan's NSE scripts reported. */
+  vulns?: VulnRef[];
 };
 
 export type NmapScan = {
   fileName: string;
   args?: string;
   version?: string;
+  /** `nmap`, `masscan`, or whatever wrote the file. */
+  scanner?: string;
+  /** Which of nmap's output shapes this came from. */
+  format?: 'xml' | 'grepable' | 'normal';
+  /** Where the scan was pointed, taken from the command line and `<target>`. */
+  targets?: string[];
   startedAt?: string;
   elapsedSeconds?: number;
   /** nmap's own closing line, e.g. `… 1024 IP addresses (0 hosts up) scanned in 827.34 seconds`. */
   summary?: string;
   hosts: NmapHost[];
   trace?: NmapTraceHop[];
+  /**
+   * What the reader had to work around: a repaired or salvaged XML file, dropped
+   * blocks, unreadable lines. The import preview lists them before committing.
+   */
+  warnings?: string[];
+  /** True when the file was not read as written – repaired or partly salvaged. */
+  recovered?: boolean;
 };
 
 export type Workspace = {
@@ -84,8 +124,19 @@ export type Workspace = {
   collapsed: string[];
 };
 
+/**
+ * Open ports for a host, computed once. Host records are replaced rather than
+ * mutated when the inspector edits them, so the cache key stays valid, and a card
+ * that renders, exports and is scored in the same frame pays for the filter once.
+ */
+const openPortsCache = new WeakMap<NmapHost, NmapPort[]>();
+
 export function openPorts(host: NmapHost): NmapPort[] {
-  return host.ports.filter((p) => p.state === 'open' || p.state === 'open|filtered');
+  const cached = openPortsCache.get(host);
+  if (cached) return cached;
+  const open = host.ports.filter((p) => p.state === 'open' || p.state === 'open|filtered');
+  openPortsCache.set(host, open);
+  return open;
 }
 
 export function discoveryOnly(host: NmapHost): boolean {

@@ -1,7 +1,7 @@
 import { edgeArrow, edgeLine, nodeSubtitle, nodeTitle, type DiagramDoc, type DiagramNode } from '../doc/types';
 import { buildScene } from '../graph/scene';
 import { iconEmoji } from '../icons/registry';
-import { virtualPlatformOf } from '../model/device';
+import { virtualPlatformOf, classifyHost, DEVICE_ROLE_LABELS, HIGH_VALUE_ROLES } from '../model/device';
 import { openPorts, portSummaryOr } from '../model/types';
 import { hexToRgba, nodeRisk, type RiskPolicy } from '../doc/risk';
 import { escapeMermaid, stripControl } from './text';
@@ -17,7 +17,13 @@ function labelFor(node: DiagramNode): string {
     const subtitle = nodeSubtitle(node) ? `<br/>${esc(nodeSubtitle(node))}` : '';
     const ports = portSummaryOr(node.host, 'discovered, no port scan');
     const vm = virtualPlatformOf(node.host) ? ' (VM)' : '';
-    return `${icon} ${title}${vm}${subtitle}<br/>${esc(ports)}`;
+    const profile = classifyHost(node.host);
+    const role =
+      profile.role && HIGH_VALUE_ROLES.has(profile.role)
+        ? ` · ${esc(DEVICE_ROLE_LABELS[profile.role])}`
+        : '';
+    const vulns = node.host.vulns?.length ? ` · ⚠ ${node.host.vulns.length}` : '';
+    return `${icon} ${title}${vm}${role}${vulns}${subtitle}<br/>${esc(ports)}`;
   }
   if (node.kind === 'note') {
     const body = node.notes ? `<br/>${esc(node.notes.slice(0, 120))}` : '';
@@ -40,17 +46,31 @@ export function toMermaid(doc: DiagramDoc, riskPolicy: RiskPolicy): string {
   if (sections.length === 0) {
     for (const node of visible) lines.push(`  ${mid(node.id)}["${labelFor(node)}"]`);
   } else {
-    for (const section of sections) {
-      const children = visible.filter((node) => node.parentId === section.id);
-      lines.push(`  subgraph ${mid(section.id)}["${labelFor(section)}"]`);
-      lines.push('    direction TB');
-      for (const child of children) lines.push(`    ${mid(child.id)}["${labelFor(child)}"]`);
-      lines.push('  end');
-    }
+    // Frames nest, so the subgraphs nest: a section inside a section is a subgraph
+    // inside its subgraph, and a card is written in the frame that holds it.
+    const childrenOf = new Map<string | null, DiagramNode[]>();
     for (const node of visible) {
-      if (node.kind === 'section' || node.parentId) continue;
-      lines.push(`  ${mid(node.id)}["${labelFor(node)}"]`);
+      const key = node.parentId ?? null;
+      const bucket = childrenOf.get(key);
+      if (bucket) bucket.push(node);
+      else childrenOf.set(key, [node]);
     }
+    const writeGroup = (parentId: string | null, depth: number) => {
+      const pad = '  '.repeat(depth);
+      const kids = childrenOf.get(parentId) ?? [];
+      // Frames are declared before the cards that stand beside them, so the file
+      // reads like the diagram does.
+      for (const node of kids.filter((child) => child.kind === 'section')) {
+        lines.push(`${pad}subgraph ${mid(node.id)}["${labelFor(node)}"]`);
+        lines.push(`${pad}  direction TB`);
+        writeGroup(node.id, depth + 1);
+        lines.push(`${pad}end`);
+      }
+      for (const node of kids.filter((child) => child.kind !== 'section')) {
+        lines.push(`${pad}${mid(node.id)}["${labelFor(node)}"]`);
+      }
+    };
+    writeGroup(null, 1);
   }
 
   for (const edge of doc.edges) {

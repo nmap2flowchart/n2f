@@ -55,6 +55,8 @@ export type CodeModel = {
   edges: CodeEdge[];
   layerName?: string;
   layerColor?: string;
+  /** `undefined` means the code said nothing about grouping; `null` means “auto”. */
+  grouping?: { ipv4?: number; ipv6?: number } | null;
   /** `undefined` means the code said nothing about risk levels. */
   risk?: CodeRiskLevel[] | null;
 };
@@ -87,7 +89,7 @@ const ATTR_KEY = /^[A-Za-z_][\w-]*/;
 /** A line that starts with `key:` continues the statement above it. */
 const CONTINUATION = /^[A-Za-z_][\w-]*\s*:/;
 /** …except these, which are statements of their own. */
-const LINE_DIRECTIVE = /^(layer|risk)\s*:/i;
+const LINE_DIRECTIVE = /^(layer|risk|grouping)\s*:/i;
 
 const DIRECTIONS = new Set<string>(FLOW_DIRECTIONS);
 const SHAPE_OPENERS = '[({>';
@@ -475,6 +477,23 @@ export function parseCode(text: string): CodeParseResult {
       const parsed = parseRisk(riskMatch[1]);
       if (parsed && 'error' in parsed) return { ok: false, error: `Line ${lineNo}: ${parsed.error}`, line: lineNo };
       model.risk = parsed;
+      continue;
+    }
+
+    const groupingMatch = /^grouping\s*:(.*)$/i.exec(line);
+    if (groupingMatch) {
+      const value = groupingMatch[1].trim();
+      if (!value || /^auto$/i.test(value)) {
+        // `auto` is "let the importer decide", which is not the same as saying
+        // nothing: it clears a prefix the diagram had.
+        model.grouping = null;
+        continue;
+      }
+      const prefix = Number(value.replace(/^\//, ''));
+      if (!Number.isInteger(prefix) || prefix < 8 || prefix > 128) {
+        return { ok: false, error: `Line ${lineNo}: grouping expects a prefix such as /24.`, line: lineNo };
+      }
+      model.grouping = prefix <= 32 ? { ipv4: prefix } : { ipv6: prefix };
       continue;
     }
 

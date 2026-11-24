@@ -2,16 +2,19 @@ import {
   nodeTitle,
   edgeArrow,
   edgeSides,
+  type DiagramDesign,
   type DiagramDoc,
   type EdgePath,
   type EdgeSide,
 } from '../doc/types';
-import { buildScene } from '../graph/scene';
+import { buildScene, type Scene } from '../graph/scene';
 import { HOP_H } from '../graph/layout';
 import { iconById } from '../icons/registry';
 import { openPorts } from '../model/types';
 import { virtualPlatformOf } from '../model/device';
 import { hexToRgba, levelForPort, type RiskPolicy } from '../doc/risk';
+import { DEVICE_ROLE_TAGS, HIGH_VALUE_ROLES } from '../model/device';
+import { vulnColor } from '../model/vulns';
 import { escapeXml } from './text';
 
 
@@ -116,9 +119,13 @@ function arrowHead(x: number, y: number, fromX: number, fromY: number, color: st
 function edgeDraw(path: EdgePath, x1: number, y1: number, x2: number, y2: number, bend: number): string {
   if (path === 'straight') return `M ${round(x1)} ${round(y1)} L ${round(x2)} ${round(y2)}`;
   if (path === 'curve') {
-    return `M ${round(x1)} ${round(y1)} C ${round(x1 + bend)} ${round(y1)}, ${round(x2 - bend)} ${round(y2)}, ${round(
-      x2,
-    )} ${round(y2)}`;
+    // Bow toward the target. A fixed positive bend points the control points away from
+    // the cards when the line runs right to left, which throws the curve outside the
+    // page and clips it – the diagram then "leaves the screen".
+    const dir = x2 >= x1 ? 1 : -1;
+    return `M ${round(x1)} ${round(y1)} C ${round(x1 + dir * bend)} ${round(y1)}, ${round(
+      x2 - dir * bend,
+    )} ${round(y2)}, ${round(x2)} ${round(y2)}`;
   }
   const mid = (x1 + x2) / 2;
   if (path === 'step') return `M ${round(x1)} ${round(y1)} H ${round(mid)} V ${round(y2)} H ${round(x2)}`;
@@ -243,16 +250,158 @@ function iconMarkup(id: string | undefined, x: number, y: number, size: number, 
 }
 
 /**
+ * The basic design: the same boxes in the same places, drawn as a plain network
+ * diagram. Risk still owns the outline, because it is a finding rather than
+ * decoration, and the port count survives on a card with no hostname to show.
+ */
+function basicSvg(
+  doc: DiagramDoc,
+  scene: Scene,
+  ink: Palette,
+  page: { width: number; height: number; shiftX: number; shiftY: number },
+): SvgExport {
+  const { width, height, shiftX, shiftY } = page;
+  const body: string[] = [];
+
+  for (const section of scene.sections) {
+    const b = section.box;
+    const stroke = section.node.accent ?? ink.sectionStroke;
+    body.push(rect(b.x, b.y, b.w, b.h, { stroke, sw: 1, rx: 8 }));
+    body.push(
+      text({
+        x: b.x + 12,
+        y: b.y + 20,
+        text: fit(nodeTitle(section.node), b.w - 24, 11.5, true),
+        size: 11.5,
+        color: ink.sectionText,
+        mono: true,
+        bold: true,
+      }),
+    );
+  }
+
+  for (const { edge, source, target, line, path } of scene.edges) {
+    const sides = edgeSides(edge);
+    const start = edgePoint(source.box, sides.from);
+    const end = edgePoint(target.box, sides.to);
+    const vertical = sides.from === 't' || sides.from === 'b';
+    const bend = Math.max(40, (vertical ? Math.abs(end.y - start.y) : Math.abs(end.x - start.x)) * 0.45);
+    const dash = line === 'solid' ? '' : line === 'dashed' ? '7 5' : '1.6 4.4';
+    const stroke = edge.kind === 'route' ? ink.route : ink.link;
+    body.push(
+      `<path d="${edgeDraw(vertical ? (path === 'curve' ? 'straight' : path) : path, start.x, start.y, end.x, end.y, bend)}" fill="none" stroke="${stroke}" stroke-width="1"${
+        dash ? ` stroke-dasharray="${dash}"` : ''
+      }/>`,
+    );
+    const arrow = edgeArrow(edge);
+    if (arrow === 'target' || arrow === 'both') body.push(arrowHead(end.x, end.y, start.x, start.y, stroke));
+    if (arrow === 'source' || arrow === 'both') body.push(arrowHead(start.x, start.y, end.x, end.y, stroke));
+    if (edge.label) {
+      body.push(
+        text({
+          x: (start.x + end.x) / 2,
+          y: (start.y + end.y) / 2 - 6,
+          text: edge.label,
+          size: 9,
+          color: ink.meta,
+          anchor: 'middle',
+        }),
+      );
+    }
+  }
+
+  for (const item of scene.cards) {
+    const node = item.node;
+    const b = item.box;
+
+    if (node.kind === 'host') {
+      const open = node.host ? openPorts(node.host) : [];
+      const stroke = item.risk?.color ?? node.accent ?? ink.cardStroke;
+      body.push(rect(b.x, b.y, b.w, b.h, { fill: ink.card, stroke, sw: item.risk ? 1.6 : 1, rx: 6 }));
+      body.push(
+        text({ x: b.x + 10, y: b.y + 20, text: fit(nodeTitle(node), b.w - 20, 11.5, true), size: 11.5, color: ink.title, mono: true, bold: true }),
+      );
+      const subtitle =
+        node.subtitle ?? node.host?.hostnames.find((name) => name.trim()) ?? node.host?.mac ?? '';
+      const second =
+        subtitle ||
+        (node.host
+          ? open.length === 0
+            ? 'no open ports'
+            : `${open.length} open port${open.length === 1 ? '' : 's'}`
+          : '');
+      if (second) {
+        body.push(text({ x: b.x + 10, y: b.y + 34, text: fit(second, b.w - 20, 9.5, false), size: 9.5, color: ink.sub }));
+      }
+      continue;
+    }
+
+    if (node.kind === 'note') {
+      body.push(rect(b.x, b.y, b.w, b.h, { fill: ink.card, stroke: node.accent ?? ink.noteStroke, sw: 1, rx: 6, dash: '5 4' }));
+      body.push(
+        text({ x: b.x + 10, y: b.y + 19, text: fit(nodeTitle(node), b.w - 20, 10.5, false), size: 10.5, color: ink.noteText, bold: true }),
+      );
+      const lines = wrap(node.notes ?? '', b.w - 20, 9.5, Math.max(1, Math.floor((b.h - 32) / 13)));
+      lines.forEach((line, index) => {
+        body.push(text({ x: b.x + 10, y: b.y + 34 + index * 13, text: line, size: 9.5, color: ink.noteText }));
+      });
+      continue;
+    }
+
+    const stroke = node.accent ?? (node.kind === 'hop' ? ink.hopStroke : ink.originStroke);
+    body.push(rect(b.x, b.y, b.w, b.h, { fill: ink.card, stroke, sw: 1, rx: node.kind === 'hop' ? b.h / 2 : 6 }));
+    body.push(
+      text({
+        x: b.x + 10,
+        y: b.y + b.h / 2 + 4,
+        text: fit(nodeTitle(node), b.w - 20, 10.5, true),
+        size: 10.5,
+        color: ink.title,
+        mono: true,
+      }),
+    );
+  }
+
+  const svg = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(width)}" height="${Math.round(
+      height,
+    )}" viewBox="0 0 ${round(width)} ${round(height)}">`,
+    `<title>${esc(doc.fileName)}</title>`,
+    rect(0, 0, width, height, { fill: ink.page }),
+    `<g transform="translate(${round(shiftX)} ${round(shiftY)})">`,
+    ...body,
+    '</g>',
+    '</svg>',
+  ].join('\n');
+
+  return { svg, width, height };
+}
+
+/**
  * The picture. `theme` picks the palette: `light` is the printed export, `dark` the
  * same drawing on a dark page, which is what the VS Code preview asks for.
+ * `design` picks how much detail is drawn: `basic` is the plain network diagram the
+ * design toggle shows, with the same geometry and the same scope.
  */
-export function toSvg(doc: DiagramDoc, riskPolicy: RiskPolicy, theme: SvgTheme = 'light'): SvgExport {
+export function toSvg(
+  doc: DiagramDoc,
+  riskPolicy: RiskPolicy,
+  theme: SvgTheme = 'light',
+  design: DiagramDesign = 'detailed',
+): SvgExport {
   const scene = buildScene(doc, riskPolicy);
   const ink = theme === 'dark' ? DARK : LIGHT;
   const dark = theme === 'dark';
   const icon = (id: string | undefined, x: number, y: number, size: number) => iconMarkup(id, x, y, size, ink, dark);
-  const width = Math.max(320, scene.bounds.x + scene.bounds.w + MARGIN * 2);
-  const height = Math.max(200, scene.bounds.y + scene.bounds.h + MARGIN * 2);
+  // Cards can sit left of or above the origin – a cycle in the code layout puts them
+  // there, and so does dragging on the canvas. The page has to follow the scene
+  // bounds, or that part of the diagram is drawn outside the picture and clipped.
+  const width = Math.max(320, scene.bounds.w + MARGIN * 2);
+  const height = Math.max(200, scene.bounds.h + MARGIN * 2);
+  const shiftX = MARGIN - scene.bounds.x;
+  const shiftY = MARGIN - scene.bounds.y;
+
+  if (design === 'basic') return basicSvg(doc, scene, ink, { width, height, shiftX, shiftY });
 
   const body: string[] = [];
 
@@ -354,6 +503,26 @@ export function toSvg(doc: DiagramDoc, riskPolicy: RiskPolicy, theme: SvgTheme =
         body.push(`<circle cx="${round(b.x + b.w - 15)}" cy="${round(b.y + 15)}" r="3.4" fill="${risk.color}"/>`);
       }
 
+      // The role and any findings sit on the subtitle line, right-aligned, so they
+      // never take a port badge's place in the chip row below.
+      const flags = [
+        item.role && HIGH_VALUE_ROLES.has(item.role) ? DEVICE_ROLE_TAGS[item.role] : null,
+        item.worstVuln ? `CVE ${item.vulns.length}` : null,
+      ].filter((flag): flag is string => Boolean(flag));
+      if (flags.length > 0) {
+        const label = flags.join(' · ');
+        body.push(
+          text({
+            x: round(b.x + b.w - 11 - textWidth(label, 8, true)),
+            y: b.y + 34,
+            text: label,
+            size: 8,
+            color: item.worstVuln ? vulnColor(item.worstVuln.severity) : ink.sub,
+            mono: true,
+          }),
+        );
+      }
+
       const meta = host
         ? `${open.length === 0 ? 'no open ports' : `${open.length} open`}${
             host.os[0] ? ` · ${host.os[0].name.split(' ').slice(0, 2).join(' ')}` : ''
@@ -453,7 +622,7 @@ export function toSvg(doc: DiagramDoc, riskPolicy: RiskPolicy, theme: SvgTheme =
     )}" viewBox="0 0 ${round(width)} ${round(height)}">`,
     `<title>${esc(doc.fileName)}</title>`,
     rect(0, 0, width, height, { fill: ink.page }),
-    `<g transform="translate(${MARGIN} ${MARGIN})">`,
+    `<g transform="translate(${round(shiftX)} ${round(shiftY)})">`,
     ...body,
     '</g>',
     '</svg>',

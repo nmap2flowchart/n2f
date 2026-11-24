@@ -32,7 +32,8 @@ const TIP_GROUPS: { title: string; tips: Tip[] }[] = [
     tips: [
       {
         keys: 'Select a frame, drag a corner',
-        what: 'Resize a section by hand – smaller than its cards if you like. Moving a card inside hands the frame back to auto-size.',
+        what: 'Resize a section by hand – smaller than its cards if you like. Moving a card inside hands the frame back to auto-size.' +
+          ' A note resizes the same way: select it and drag a corner (160 × 100 is the floor).',
       },
       {
         keys: 'Frame head → arrange',
@@ -46,12 +47,36 @@ const TIP_GROUPS: { title: string; tips: Tip[] }[] = [
         keys: 'Drag a card into a frame',
         what: 'Drop it on a section to join that section; drag it out to leave. Cards stay inside the frame.',
       },
+      {
+        keys: 'Drag a frame onto another frame',
+        what: 'Sections hold sections. Drop one frame inside another to make a bigger one, or select several nodes and run Group the selection into a section (Ctrl-K). Collapsing the outer frame hides everything inside it, at any depth.',
+      },
+      {
+        keys: 'Inspector → Section inside',
+        what: 'Move a frame into another one, or back out to the free canvas. A frame is never offered the frames it already contains.',
+      },
       { keys: 'Select → Section', what: 'Move a host to another /24 frame, or back to the free canvas.' },
       {
         keys: 'Inspector → Scan data',
         what: 'Addresses, hostnames, MACs, OS and ports are all editable – add as many of each as the host has.',
       },
       { keys: 'Select → Connect', what: 'Click a node, hit Connect, then click the second node. Esc cancels.' },
+      {
+        keys: 'Import a scan',
+        what: 'Drop an nmap file anywhere, or use Import / open. `-oX` XML, `-oG` grepable, `-oN` text and masscan XML are recognised by content. The preview lists what the import changes – new hosts, refreshed ones, ports this scan no longer saw, a scan pointed at a different range – before anything is committed, and undo takes it back.',
+      },
+      {
+        keys: 'Import a damaged file',
+        what: 'A scan cut off by Ctrl+C, a truncated download or an unescaped & in a banner is repaired and read as far as it goes instead of being refused: unclosed tags are closed, a half-written element is dropped, and if the tree still cannot be built each host block is read on its own. The preview then says “partially recovered”, names the parser’s complaint with its line, and lists the repairs – so you can check the diagram before committing. Masscan writes one record per port; those become one card with every port.',
+      },
+      {
+        keys: 'Import preview → Group hosts by',
+        what: 'Subnet frames follow the range the scan was pointed at (a /22 scan draws /22 frames). Override it per diagram here; section frames the importer drew are rebuilt, and frames you renamed or resized by hand stay where they are.',
+      },
+      {
+        keys: 'Inspector → Regroup all subnet frames',
+        what: 'Change the grouping of an open diagram without re-importing. Hosts keep their cards and data; only the frame and the slot inside it change, in one undoable step.',
+      },
       {
         keys: 'Inspector → Change icon',
         what: 'Imports read the scan in the order nmap trusts: the device category nmap assigned (osclass), the service devicetype/ostype, CPE identifiers and NSE output, then the model or hostname, then the fingerprinted platform, the NIC vendor and the open ports. A router on OpenWrt stays a router. Change icon overrides it.',
@@ -62,7 +87,15 @@ const TIP_GROUPS: { title: string; tips: Tip[] }[] = [
       },
       {
         keys: 'Risk',
-        what: 'Opens the risk summary: every level, the ports that raised it and the hosts listening on them. Switch between the current view and the whole diagram, filter the tree, then export JSON or CSV for a report.',
+        what: 'Opens the risk summary: every level, the ports that raised it and the hosts listening on them. Switch between the current view and the whole diagram, filter the tree, then export JSON or CSV for a report. The CSV carries a column of the CVEs the scan found on each host.',
+      },
+      {
+        keys: 'Card tags',
+        what: 'Short tags say what a box does – DC, HV, DNS, DB, MAIL, VPN – from the ports and scripts the scan reported, and `CVE n` counts the findings its scripts reported. The hover card and the inspector show the evidence and the full list with scores.',
+      },
+      {
+        keys: 'Export → Inventory',
+        what: 'Markdown or CSV table of every host card in the exported scope: address, names, role, OS, open ports, risk level, findings and layer, grouped by section.',
       },
       {
         keys: 'Drag a node by a connector',
@@ -100,6 +133,10 @@ const TIP_GROUPS: { title: string; tips: Tip[] }[] = [
         what: 'Resize the layers panel – double-click the edge to go back to the default width. The width is remembered in this browser.',
       },
       {
+        keys: 'Layers panel → counts',
+        what: 'Under the hint, above the credit: the ports sitting at the worst risk level, host cards, open ports and layers. They live in the panel at every window width – the toolbar itself only carries Overview and Risk.',
+      },
+      {
         keys: '⋯ → Add scan as new layer',
         what: 'Drop in another scan file and it lands on its own layer. Pick several files to get one layer each; the newest becomes active. The import preview opens with New layer already selected.',
       },
@@ -125,6 +162,10 @@ const TIP_GROUPS: { title: string; tips: Tip[] }[] = [
       {
         keys: 'Filter “risk:…”',
         what: 'risk:any (or risk:) flags every host with a matched port, risk:high the ones at the top level, and risk:critical / risk:medium / risk:low a level by name.',
+      },
+      {
+        keys: 'Filter → .*',
+        what: 'The .* button in the filter field switches every value to a case-insensitive regular expression: ip:^10\\.0\\.0\\. keeps one subnet, port:^(80|443)$ the two web ports, host:^(web|db)- a naming scheme. The prefixes (ip:, host:, subnet:, port:, service:, risk:) still work and risk: stays a lookup rather than a pattern. A pattern that does not compile is named in the tooltip and the last valid filter keeps running, so a half-typed bracket never blanks the diagram. The preference is remembered per browser.',
       },
       {
         keys: 'Filter field',
@@ -159,8 +200,8 @@ const TIP_GROUPS: { title: string; tips: Tip[] }[] = [
         what: 'flowchart LR | TB | RL | BT sets the flow direction. Each line is one node: web["Web server"] host: "10.0.0.5" ports: "80/http,443/https", memo>Note] notes: "free text", or just web for a bare card. subgraph dmz["DMZ"] … end groups cards into a section, and an id used before it is declared is created for you. Edges use Mermaid arrows (-->, -.->, <-->, ---) with |labels| and optional style:, path:, from:, to:, arrow: and kind:. risk: Critical = 21, 23 ; High = 445 sets the diagram’s risk levels, and # or %% starts a comment.',
       },
       {
-        keys: 'Save',
-        what: 'The shortcut beside the filter saves the whole diagram as a design file – the same export as Import / Export → Design file (.json).',
+        keys: 'Save a copy',
+        what: 'The whole diagram – layers, positions, notes, connections and its risk levels – saves as one design file another instance can open. It lives in ⋯ → Export design file (.json), in Import / Export → Design file, in the command palette (“Download a design file”) and on the Save status chip, whose panel has Download a copy of this diagram.',
       },
       {
         keys: 'Export → design file',
@@ -184,7 +225,7 @@ const TIP_GROUPS: { title: string; tips: Tip[] }[] = [
       },
       {
         keys: 'Share (account project)',
-        what: 'Publish a project as a link – from the Share button, from ⋯ → Share “project”…, or from the Share action on a row in the project list. “Can edit” makes it a live room – everyone on the link sees your changes and you see theirs, with pointers and presence. “View only” gives the same room with the editor locked: no add buttons, no layer edits, exports only. New link retires the old one; Stop sharing switches it off.',
+        what: 'Publish a project as a link – from ⋯ → Share “project”…, or from the Share action on a row in the project list. “Can edit” makes it a live room – everyone on the link sees your changes and you see theirs, with pointers and presence. “View only” gives the same room with the editor locked: no add buttons, no layer edits, exports only. New link retires the old one; Stop sharing switches it off.',
       },
       {
         keys: 'Ctrl / Cmd + K',
@@ -203,12 +244,16 @@ const TIP_GROUPS: { title: string; tips: Tip[] }[] = [
         what: 'Switches the whole editor between the dark theme (default) and a light one whose diagram matches the white page the exports print. The icon shows the theme it switches to and the choice is remembered in this browser.',
       },
       {
+        keys: 'Card / boxes icon',
+        what: 'Switches between the detailed cards – icons, port chips, role and risk tags – and a basic network diagram: plain boxes with the address, one line of detail and a thin frame, drawn the same way in the SVG, PNG and PDF exports. The data is untouched either way: the inspector, the inventory and the risk report still see every port. The choice is remembered in this browser, and ⋯ carries the same switch.',
+      },
+      {
         keys: 'Recoverable error',
         what: 'If the editor throws, it shows a page that names the failure and offers the last autosaved copy as a design file, a reload, or an empty canvas – so a broken panel cannot strand a diagram in browser storage.',
       },
       {
         keys: 'Saved locally',
-        what: 'The chip beside the filter says whether this diagram is safe in this browser and opens a panel with the detail: where it is kept (IndexedDB, or the small localStorage fallback), how big the diagram is, how much room the site has left, and when it last saved. If a write cannot be made, the panel says so and offers the diagram as a download instead. Nothing is uploaded – Import / Export → Design file is how a copy leaves the machine.',
+        what: 'The chip beside the filter says whether this diagram is safe in this browser and opens a panel with the detail: where it is kept (IndexedDB, or the small localStorage fallback), how big the diagram is, how much room the site has left, and when it last saved. Hovering previews the panel; clicking the chip keeps it open until you click the chip again or anywhere else, so its button is easy to reach. If a write cannot be made, the panel says so and offers the diagram as a download instead. Nothing is uploaded – Import / Export → Design file is how a copy leaves the machine.',
       },
       {
         keys: 'Account chip → Projects',

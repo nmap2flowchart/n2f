@@ -7,7 +7,7 @@ import {
   type Layer,
 } from '../doc/types';
 import { HOP_H, HOP_W, HOST_H, HOST_W, ORIGIN_H, ORIGIN_W, compareIp } from '../graph/layout';
-import { detectIcon } from '../icons/registry';
+import { detectIcon } from '../icons/detect';
 import { DEVICE_KIND_ICONS } from '../model/device';
 import type {
   ConnectHost,

@@ -87,6 +87,7 @@ type History = { past: Snapshot[]; future: Snapshot[] };
 const KEYWORDS = [
   'flowchart LR | TB | RL | BT',
   'layer: "Name" color: #4b9fff',
+  'grouping: /24',
   'risk: Critical = 21, 23 ; High = 445',
   'subgraph id["Title"] cidr: "10.0.0.0/24"',
   'web["Web server"] host: "10.0.0.5" ports: "80/http,443/https"',

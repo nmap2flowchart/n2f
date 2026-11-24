@@ -189,6 +189,8 @@ export function docToCode(doc: DiagramDoc, layerId: string, layout: CodeLayout =
     `layer: ${quote(layer?.name ?? 'Layer')}${layer?.color ? ` color: ${layer.color}` : ''}`,
   ];
   if (doc.risk) lines.push(riskLine(doc.risk));
+  if (doc.grouping?.ipv4) lines.push(`grouping: /${doc.grouping.ipv4}`);
+  else if (doc.grouping?.ipv6) lines.push(`grouping: /${doc.grouping.ipv6}`);
 
   const children = new Map<string | null, DiagramNode[]>();
   for (const node of nodes) {

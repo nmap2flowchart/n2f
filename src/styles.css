@@ -94,6 +94,12 @@ body,
   margin: 0;
 }
 
+/* A stray off-screen box (a tooltip, a drawer mid-transition) must never make a
+   phone widen its layout viewport and shrink the whole app. */
+html {
+  overflow-x: clip;
+}
+
 body {
   background: var(--bg);
   overflow: hidden;
@@ -160,42 +166,14 @@ body {
   min-width: 0;
 }
 
-/* Only the numbers may shrink: without this the count row overflowed its box and
-   painted over “Saved locally” on a ~1280px window. The row clips at its right edge,
-   so the order puts the most useful count first and layers drops out first. */
-.topbar__counts {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.topbar__counts .stat {
-  flex: none;
-}
-
-/* The top bar carries the headline number; the rest live in Overview. Below
-   1500px the toolbar needs the room, so the optional counts step aside instead of
-   being clipped mid-word, and below 1360px everything but the first count goes. */
+/* The headline counts live in the layer panel now, so nothing here has to fold away
+   as the window narrows: the toolbar keeps Overview and Risk at every width. */
 @media (max-width: 1500px) {
-  .topbar__counts {
-    gap: 13px;
-  }
-  .topbar__counts .stat--optional {
-    display: none;
-  }
   .topbar__actions {
     gap: 5px;
   }
   .search__field {
     width: 168px;
-  }
-}
-
-@media (max-width: 1360px) {
-  .topbar__counts .stat:not(:first-child) {
-    display: none;
   }
 }
 
@@ -655,6 +633,36 @@ body {
   white-space: nowrap;
 }
 
+.search__count--error {
+  color: #e5484d;
+  font-weight: 700;
+}
+
+/* The regex toggle lives in the field like the count: it is part of the query,
+   not a separate action. */
+.search__regex {
+  flex: none;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+.search__regex:hover {
+  color: var(--text-soft);
+  border-color: var(--line-strong);
+}
+.search__regex.is-on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 .btn {
   height: 30px;
   padding: 0 12px;
@@ -757,6 +765,31 @@ body {
   opacity: 1;
   visibility: visible;
   transform: translate(-50%, 0);
+}
+
+/* Touch devices have no hover: the bubble would never be read, and its
+   `width: max-content` box pushed the layout viewport wider than the screen. */
+@media (hover: none) {
+  [data-tooltip]::after {
+    display: none;
+  }
+}
+
+/* One scrim backs every drawer. It is inert until a drawer is actually open;
+   only the phone layout (where the panels overlay the canvas) shows it. */
+.mobile-drawer-backdrop {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 29;
+  border: 0;
+  padding: 0;
+  background: var(--glass);
+}
+
+/* The file action prints one label for the topbar and one for the phone. */
+.file-action__narrow {
+  display: none;
 }
 
 .menu-wrap {
@@ -1359,6 +1392,19 @@ body {
   border-color: color-mix(in srgb, var(--accent) 60%, transparent);
 }
 
+/* A note is resized by hand the same way a frame is. */
+.react-flow__resize-control.note-resizer__handle {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  border: 2px solid var(--line);
+  background: var(--node-accent, var(--accent));
+}
+
+.react-flow__resize-control.note-resizer__line {
+  border-color: color-mix(in srgb, var(--node-accent, var(--accent)) 55%, transparent);
+}
+
 .origin-node {
   position: relative;
   width: 100%;
@@ -1452,6 +1498,8 @@ body {
 }
 
 .note-node__body {
+  flex: 1 1 auto;
+  min-height: 0;
   margin: 0;
   font-size: 11px;
   line-height: 1.5;
@@ -1483,7 +1531,7 @@ body {
 .note-node__input {
   flex: 1;
   width: 100%;
-  min-height: 62px;
+  min-height: 0;
   padding: 0;
   border: 0;
   background: transparent;
@@ -1775,10 +1823,14 @@ body {
   font-family: var(--mono);
   font-size: 11.5px;
   color: var(--muted);
+  max-width: calc(100% - 24px);
+  overflow-x: auto;
 }
 
 .empty-state__actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 8px;
   margin-top: 6px;
   pointer-events: auto;
@@ -2889,11 +2941,37 @@ body {
 
 .layer-panel__hint {
   margin: 0;
-  padding: 10px 14px 14px;
+  padding: 10px 14px 12px;
   font-size: 10.5px;
   line-height: 1.5;
   color: #4f5d70;
   border-top: 1px solid var(--line);
+}
+
+/* The diagram's headline numbers, under the hint and above the credit: the sidebar has
+   the room the toolbar never had, so they stay visible at every width. */
+.layer-panel__stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  padding: 0 14px 12px;
+}
+
+.layer-panel__stats .stat {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+}
+
+.layer-panel__stats .stat__value {
+  font-size: 14px;
+}
+
+.layer-panel__stats .stat__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .layer-panel__foot {
@@ -3372,10 +3450,8 @@ select.input {
 }
 
 @media (max-width: 1180px) {
-  /* Hide the counts, not the buttons: Overview and Risk must stay reachable. */
-  .topbar__counts {
-    display: none;
-  }
+  /* The counts moved into the layer panel, so the toolbar only has to keep its
+     buttons reachable; the panel narrows to leave the canvas room. */
   .layer-panel {
     width: 208px;
   }
@@ -3385,13 +3461,11 @@ select.input {
   .brand__text span {
     display: none;
   }
+  /* The layer panel stays in the flow here: at tablet width there is room for it
+     beside the canvas, and overlaying it hid the part of the diagram people were
+     working on. It only becomes a drawer on phones (≤760px). */
   .layer-panel {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    z-index: 30;
-    box-shadow: 18px 0 40px rgba(0, 0, 0, 0.5);
+    width: 208px;
   }
 }
 
@@ -3452,58 +3526,134 @@ select.input {
     font-size: 11px;
     white-space: nowrap;
   }
+  .mobile-search__count.is-error {
+    color: #e5484d;
+  }
+  .mobile-search__regex {
+    width: 32px;
+    height: 32px;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .mobile-search__regex.is-on {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
 }
 
+/* ---------------------------------------------------------------------------
+   Phone layout (≤ 760px)
+   One block, because these rules only make sense together: the topbar folds to
+   icons, the layer panel and inspector become drawers over the canvas, and a
+   single scrim class backs whichever drawer is open.
+   --------------------------------------------------------------------------- */
 @media (max-width: 760px) {
-  .inspector {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: 300px;
-    z-index: 30;
-    box-shadow: -24px 0 48px rgba(0, 0, 0, 0.55);
+  /* Two rows: brand + Overview/Risk on top, the action strip underneath. One row
+     cannot hold them at 390px, and hiding actions behind “⋯” made importing and
+     exporting hard to find. */
+  .app {
+    grid-template-rows: auto 1fr;
   }
   .topbar {
-    gap: 8px;
-    padding: 0 8px;
+    position: relative;
+    flex-wrap: wrap;
+    align-content: center;
+    gap: 2px 6px;
+    padding: 5px 8px;
+  }
+  .topbar__stats {
+    flex: none;
+    padding-left: 4px;
+  }
+  .topbar__actions {
+    flex: 1 0 100%;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 3px;
+    row-gap: 4px;
   }
   .brand .logo {
     width: 30px;
     height: 30px;
   }
+  /* Icons stay; text buttons fold into the “⋯” menu. The accent file button is
+     the exception – importing and exporting must stay one tap away. */
   .brand__text span,
   .topbar__divider,
   .topbar .btn--ghost:not(.btn--icon),
-  .topbar__actions > .btn:not(.mobile-import-button):not(.btn--icon) {
+  .topbar__actions > .btn:not(.btn--icon) {
     display: none;
   }
-  .topbar__actions {
-    gap: 4px;
-    flex: 1;
-    justify-content: flex-end;
+  .topbar__actions > .btn.file-action {
+    display: inline-flex;
+    flex: none;
+    padding: 0 10px;
+    font-size: 11.5px;
   }
-  .mobile-import-button {
-    max-width: 126px;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  /* Nine controls have to share one 344px strip: tighter hit boxes keep every
+     one of them on a single line down to 360px. */
+  .topbar__actions .btn--icon {
+    width: 26px;
+    height: 28px;
   }
-  .mobile-drawer-backdrop {
+  .topbar__actions .menu-wrap .btn--icon {
+    width: 28px;
+  }
+  .file-action__wide {
+    display: none;
+  }
+  .file-action__narrow {
+    display: inline;
+  }
+
+  /* The search bar covers the whole two-row topbar instead of a 54px slice of it. */
+  .mobile-search {
     position: absolute;
-    inset: 54px 0 0;
-    z-index: 29;
-    border: 0;
-    background: var(--glass);
+    inset: 0;
+    height: auto;
+    border-radius: 0;
+    z-index: 6;
   }
+
+  .mobile-drawer-backdrop {
+    display: block;
+  }
+
+  /* Tooltips need hover; on a phone they only create off-screen overflow, which
+     makes the browser widen the layout viewport and zoom the whole app out. */
+  [data-tooltip]::after {
+    display: none;
+  }
+
   .layer-panel {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(280px, 86vw);
     z-index: 31;
+    box-shadow: 18px 0 40px rgba(0, 0, 0, 0.5);
   }
+  .layer-panel__resizer {
+    display: none;
+  }
+
   .inspector {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(340px, 92vw);
     z-index: 31;
+    box-shadow: -24px 0 48px rgba(0, 0, 0, 0.55);
   }
-  .mobile-inspector-backdrop:not(:first-child) {
-    z-index: 29;
-  }
+
   .canvas-dock {
     left: 50px;
     bottom: 8px;
@@ -3529,10 +3679,60 @@ select.input {
   .selection-bar__color-field {
     flex: none;
   }
+
+  /* No minimap on a phone-width canvas: it covered the dock and the empty-state
+     hint. The grid/legend row keeps the corner instead of floating 141px up, and
+     steps over the selection bar when that shows. */
+  .react-flow__minimap {
+    display: none;
+  }
+  .canvas-tools {
+    right: 8px;
+    bottom: 56px;
+  }
+  .canvas:has(.selection-bar) .canvas-tools {
+    bottom: 104px;
+  }
+
+  /* The quick-start card cannot keep its three columns on a phone. */
+  .onboarding,
+  .onboarding--empty {
+    top: 62px;
+    width: calc(100% - 20px);
+    max-height: calc(100% - 84px);
+    overflow-y: auto;
+  }
+
+  .empty-state {
+    padding: 16px 14px;
+  }
+  /* The sample command wraps instead of scrolling sideways off the card. */
+  .empty-state pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
 }
 
-@media (min-width: 761px) {
-  .mobile-drawer-backdrop {
+/* Three steps side by side need ~600px of canvas: below that the card stacks so
+   the labels stop wrapping into one word per line. */
+@media (max-width: 980px) {
+  .onboarding {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 10px 34px 10px 12px;
+  }
+  .onboarding ol {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+  .onboarding li {
+    align-items: flex-start;
+  }
+}
+
+/* Below ~420px the save chip is the first thing the action strip cannot hold. */
+@media (max-width: 420px) {
+  .topbar__actions .save-status {
     display: none;
   }
 }
@@ -3796,10 +3996,6 @@ select.input {
   background: rgba(240, 162, 92, 0.1);
 }
 
-.share-button.is-on {
-  color: var(--accent);
-}
-
 .share-dialog__link {
   display: flex;
   gap: 8px;
@@ -3921,6 +4117,56 @@ select.input {
 }
 .import-preview__effect.is-warning {
   color: #ffb36b;
+}
+.import-preview__warnings {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  color: #ffb36b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.import-preview__recovered {
+  color: #ffb36b;
+}
+.import-preview__grouping {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0 0;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+.import-preview__grouping select {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+}
+.port-editor__history {
+  margin: 2px 0 0 2px;
+  color: var(--text-soft);
+  font-size: 11px;
+}
+.inspector__findings {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.inspector__findings li {
+  margin-bottom: 4px;
+}
+.inspector__findings span {
+  color: var(--text-soft);
+}
+.tag--role {
+  border-color: var(--line);
+  color: var(--text-soft);
+}
+.tag--vuln {
+  font-variant-numeric: tabular-nums;
 }
 .import-preview__metadata {
   margin: 18px 0 0;
@@ -4171,8 +4417,7 @@ select.input {
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .workspace-open,
-  .workspace-save {
+  .workspace-open {
     min-width: 0;
     padding-inline: 10px;
   }
@@ -5360,6 +5605,17 @@ select.input {
   border-top: 1px solid var(--line-strong);
 }
 
+/* The 8px gap to the chip is part of the panel's target, so the pointer never
+   leaves the panel on its way from the chip to the button inside it. */
+.save-status__panel::after {
+  content: '';
+  position: absolute;
+  top: -8px;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+
 .save-status__head {
   display: flex;
   align-items: center;
@@ -6387,19 +6643,6 @@ select.input {
   --accent: #7b2fd0;
 }
 
-/* The Save button keeps its quiet look but shows an edge, so it does not read as
-   a label next to the icon cluster. */
-.btn--ghost.btn--bordered {
-  border-color: var(--line-strong);
-  color: var(--text-soft);
-}
-
-.btn--ghost.btn--bordered:hover:not(:disabled) {
-  border-color: var(--line-strong);
-  background: var(--surface-3);
-  color: var(--text);
-}
-
 /* Theme switch: a sun to go light, a moon to go back. */
 .theme-toggle svg {
   width: 15px;
@@ -6412,6 +6655,21 @@ select.input {
 }
 
 .theme-toggle[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+/* Design switch: a card with its lines, or a pair of plain boxes. */
+.design-toggle svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.design-toggle[aria-pressed='true'] {
   color: var(--accent);
 }
 /* Light theme: keep the tinted status pills readable on a white card. The risk
@@ -6880,4 +7138,61 @@ select.input {
     width: min(92vw, 430px) !important;
     box-shadow: -18px 0 40px rgba(0, 0, 0, 0.4);
   }
+}
+/* ---------------------------------------------------------------------------
+   Basic diagram design. `data-design` sits on <html> next to `data-theme`, and
+   the picture exports read the same preference, so the canvas and the SVG/PNG/PDF
+   a user prints show the same diagram. Nothing is removed from the document: the
+   ports, roles and findings are still in the data, the panels and every other
+   export, they are just not painted on the card.
+   --------------------------------------------------------------------------- */
+
+[data-design='basic'] .canvas :is(.host-node, .note-node, .hop-node, .origin-node) {
+  background: var(--surface-1);
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+[data-design='basic'] .canvas .note-node {
+  border-style: dashed;
+}
+
+[data-design='basic'] .canvas .section-node {
+  background: transparent;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+[data-design='basic'] .canvas .section-node__head {
+  height: 34px;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+}
+
+/* The icon, the port chips and the flags are the detail the basic design drops. */
+[data-design='basic'] .canvas :is(.host-node__badges, .host-node__flags, .section-node__count) {
+  display: none;
+}
+
+[data-design='basic'] .canvas .node-icon {
+  display: none;
+}
+
+/* One line under the title: the hostname when there is one, else the port count –
+   the same rule the basic SVG export follows. */
+[data-design='basic'] .canvas .host-node__meta {
+  padding-left: 0;
+}
+
+[data-design='basic'] .canvas .host-node:has(.host-node__sub) .host-node__meta {
+  display: none;
+}
+
+[data-design='basic'] .canvas :is(.host-node, .note-node, .section-node).is-selected {
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+[data-design='basic'] .canvas .host-node.is-selected {
+  box-shadow: 0 0 0 1px var(--accent);
 }

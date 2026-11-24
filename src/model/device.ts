@@ -56,6 +56,46 @@ export type EvidenceSource =
 
 export type DeviceEvidence = { source: EvidenceSource; detail: string };
 
+/** A high-value job a box does, from the evidence the scan carries. */
+export type DeviceRole =
+  | 'domain-controller'
+  | 'hypervisor-host'
+  | 'dns'
+  | 'file-server'
+  | 'database'
+  | 'mail'
+  | 'web'
+  | 'vpn-gateway'
+  | 'dhcp'
+  | 'backup';
+
+export const DEVICE_ROLE_LABELS: Record<DeviceRole, string> = {
+  'domain-controller': 'Domain controller',
+  'hypervisor-host': 'Hypervisor',
+  dns: 'DNS server',
+  'file-server': 'File server',
+  database: 'Database',
+  mail: 'Mail server',
+  web: 'Web server',
+  'vpn-gateway': 'VPN gateway',
+  dhcp: 'DHCP server',
+  backup: 'Backup',
+};
+
+/** Short enough for a card corner. */
+export const DEVICE_ROLE_TAGS: Record<DeviceRole, string> = {
+  'domain-controller': 'DC',
+  'hypervisor-host': 'HV',
+  dns: 'DNS',
+  'file-server': 'SMB',
+  database: 'DB',
+  mail: 'MAIL',
+  web: 'WEB',
+  'vpn-gateway': 'VPN',
+  dhcp: 'DHCP',
+  backup: 'BAK',
+};
+
 export type DeviceProfile = {
   kind: DeviceKind;
   kindEvidence: DeviceEvidence[];
@@ -67,6 +107,9 @@ export type DeviceProfile = {
   signatureKind: boolean;
   /** Set when the NIC is a virtual one: `Proxmox VE`, `VMware`, `KVM/QEMU`, `Hyper-V`… */
   virtual?: string;
+  /** The most valuable role the scan supports, with why. */
+  role?: DeviceRole;
+  roleEvidence?: DeviceEvidence;
 };
 
 export const UNKNOWN_PROFILE: DeviceProfile = {
@@ -366,6 +409,93 @@ function firstLine(output: string, pattern: RegExp): string | undefined {
   return match?.[1]?.trim() || undefined;
 }
 
+const ROLE_ORDER: DeviceRole[] = [
+  'domain-controller',
+  'hypervisor-host',
+  'dns',
+  'database',
+  'mail',
+  'vpn-gateway',
+  'file-server',
+  'web',
+  'dhcp',
+  'backup',
+];
+
+/** The roles worth a badge on a card; the rest still show in the inspector. */
+export const HIGH_VALUE_ROLES: ReadonlySet<DeviceRole> = new Set<DeviceRole>([
+  'domain-controller',
+  'hypervisor-host',
+  'dns',
+  'database',
+  'mail',
+  'vpn-gateway',
+]);
+
+/**
+ * What the box does for the network, when the scan proves it.
+ *
+ * A domain controller is the case this exists for: Kerberos and LDAP together, or
+ * an SMB/LDAP script that names the domain – not "it has 445 open", which every
+ * Windows workstation does.
+ */
+function roleFor(host: NmapHost, kind: DeviceKind): Pick<DeviceProfile, 'role' | 'roleEvidence'> {
+  const open = new Set(openPorts(host).map((port) => port.port));
+  const has = (...ports: number[]) => ports.some((port) => open.has(port));
+  const scripts = scriptText(host);
+  const scriptOutput = scripts.map((script) => `${script.id}: ${script.output}`).join('\n');
+  const services = host.ports
+    .map((port) => [port.service, port.product, port.extrainfo].filter(Boolean).join(' '))
+    .join(' ')
+    .toLowerCase();
+
+  const smb = has(445, 139);
+  const directoryScript = /domain controller|defaultNamingContext=DC=|<1C>/i.test(scriptOutput);
+
+  const matches: { role: DeviceRole; evidence: DeviceEvidence }[] = [];
+  if ((has(88) && has(389, 636, 3268, 3269)) || (smb && directoryScript)) {
+    matches.push({
+      role: 'domain-controller',
+      evidence: {
+        source: directoryScript ? 'nse' : 'port',
+        detail: directoryScript
+          ? 'a script names the domain controller'
+          : 'Kerberos + LDAP + SMB',
+      },
+    });
+  }
+  if (has(8006) || has(902, 903) || /vmware esxi|proxmox ve|pveproxy/i.test(scriptOutput)) {
+    matches.push({ role: 'hypervisor-host', evidence: { source: 'port', detail: 'hypervisor management port' } });
+  }
+  if (has(53)) {
+    matches.push({ role: 'dns', evidence: { source: 'port', detail: '53/domain' } });
+  }
+  if (has(1433, 3306, 5432, 1521, 27017, 6379, 9200)) {
+    matches.push({ role: 'database', evidence: { source: 'port', detail: 'database port' } });
+  }
+  if (has(25, 465, 587) && has(110, 143, 993, 995)) {
+    matches.push({ role: 'mail', evidence: { source: 'port', detail: 'SMTP + IMAP/POP3' } });
+  }
+  if (has(500, 4500, 1194, 51820) || /openvpn|wireguard|strongswan/.test(scriptOutput)) {
+    matches.push({ role: 'vpn-gateway', evidence: { source: 'port', detail: 'VPN port' } });
+  }
+  if (smb && (kind === 'nas' || has(2049, 111) || /smb-enum-shares|smb-os-discovery/.test(scriptOutput))) {
+    matches.push({ role: 'file-server', evidence: { source: 'port', detail: 'SMB shares' } });
+  }
+  if (has(80, 443, 8080, 8443) && /http|nginx|apache|iis/.test(services)) {
+    matches.push({ role: 'web', evidence: { source: 'service', detail: 'HTTP service' } });
+  }
+  if (has(67, 68) || /dhcp/.test(scriptOutput)) {
+    matches.push({ role: 'dhcp', evidence: { source: 'port', detail: 'DHCP' } });
+  }
+  if (has(10000, 9101, 3260)) {
+    matches.push({ role: 'backup', evidence: { source: 'port', detail: 'backup / storage service' } });
+  }
+
+  const best = ROLE_ORDER.map((role) => matches.find((match) => match.role === role)).find(Boolean);
+  return best ? { role: best.role, roleEvidence: best.evidence } : {};
+}
+
 export function classifyHost(host: NmapHost | undefined): DeviceProfile {
   if (!host) return UNKNOWN_PROFILE;
 
@@ -527,6 +657,7 @@ export function classifyHost(host: NmapHost | undefined): DeviceProfile {
     strongKind: chosenKind.evidence.some((entry) => CATEGORICAL.has(entry.source)),
     signatureKind: chosenKind.evidence.some((entry) => SIGNATURE.has(entry.source)),
     virtual: virtualPlatform(macs),
+    ...roleFor(host, chosenKind.key),
   };
 }
 

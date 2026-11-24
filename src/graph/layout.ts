@@ -36,44 +36,151 @@ export type ScanLayout = {
   height: number;
 };
 
-function ipParts(ip: string): number[] {
-  return ip
-    .replace(/::/g, ':0:')
-    .split(/[.:]/)
-    .map((part) => Number.parseInt(part, 10) || 0);
+/** How many address bits a section frame groups by. */
+export type HostGrouping = { ipv4?: number; ipv6?: number };
+
+export const DEFAULT_IPV4_PREFIX = 24;
+export const DEFAULT_IPV6_PREFIX = 64;
+
+function ipv4Parts(ip: string): number[] | null {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  const octets = parts.map((part) => Number(part));
+  if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return null;
+  return octets;
+}
+
+/** Expand `2001:db8::1` to its eight 16-bit groups, or `null` when it is not one. */
+function ipv6Groups(ip: string): number[] | null {
+  const value = ip.split('%')[0];
+  if (!value.includes(':')) return null;
+  const halves = value.split('::');
+  if (halves.length > 2) return null;
+  const parse = (part: string | undefined) =>
+    (part ?? '')
+      .split(':')
+      .filter((group) => group.length > 0)
+      .map((group) => (/^[0-9a-fA-F]{1,4}$/.test(group) ? Number.parseInt(group, 16) : Number.NaN));
+
+  if (halves.length === 2) {
+    const left = parse(halves[0]);
+    const right = parse(halves[1]);
+    if ([...left, ...right].some((group) => Number.isNaN(group))) return null;
+    const fill = 8 - left.length - right.length;
+    if (fill < 0) return null;
+    return [...left, ...Array.from({ length: fill }, () => 0), ...right];
+  }
+  const groups = parse(value);
+  return groups.length === 8 && !groups.some((group) => Number.isNaN(group)) ? groups : null;
+}
+
+/** `2001:db8:0:1:0:0:0:1` → `2001:db8:0:1::1`, the form nmap prints. */
+function formatIpv6(groups: number[]): string {
+  let bestStart = -1;
+  let bestLength = 0;
+  let runStart = -1;
+  for (let index = 0; index <= groups.length; index += 1) {
+    if (index < groups.length && groups[index] === 0) {
+      if (runStart === -1) runStart = index;
+      continue;
+    }
+    if (runStart !== -1) {
+      const length = index - runStart;
+      if (length > bestLength) {
+        bestStart = runStart;
+        bestLength = length;
+      }
+      runStart = -1;
+    }
+  }
+  const text = groups.map((group) => group.toString(16)).join(':');
+  if (bestLength < 2) return text;
+  const head = groups.slice(0, bestStart).map((group) => group.toString(16)).join(':');
+  const tail = groups
+    .slice(bestStart + bestLength)
+    .map((group) => group.toString(16))
+    .join(':');
+  return `${head}::${tail}`;
+}
+
+export function ipv4PrefixOf(ip: string, prefix = DEFAULT_IPV4_PREFIX): string {
+  const octets = ipv4Parts(ip);
+  if (!octets) return 'unrouted';
+  const bits = Math.max(0, Math.min(32, Math.round(prefix)));
+  const value = ((octets[0] << 24) >>> 0) + (octets[1] << 16) + (octets[2] << 8) + octets[3];
+  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+  const network = (value & mask) >>> 0;
+  return `${(network >>> 24) & 255}.${(network >>> 16) & 255}.${(network >>> 8) & 255}.${network & 255}/${bits}`;
+}
+
+export function ipv6PrefixOf(ip: string, prefix = DEFAULT_IPV6_PREFIX): string {
+  const groups = ipv6Groups(ip);
+  if (!groups) return 'unrouted';
+  const bits = Math.max(0, Math.min(128, Math.round(prefix)));
+  const masked = groups.map((group, index) => {
+    const before = index * 16;
+    if (before >= bits) return 0;
+    const remaining = bits - before;
+    if (remaining >= 16) return group;
+    return (group & ((0xffff << (16 - remaining)) & 0xffff)) >>> 0;
+  });
+  return `${formatIpv6(masked)}/${bits}`;
 }
 
 export function compareIp(a: string, b: string): number {
-  const left = ipParts(a);
-  const right = ipParts(b);
-  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
-    const diff = (left[i] ?? 0) - (right[i] ?? 0);
-    if (diff !== 0) return diff;
+  const leftV6 = a.includes(':');
+  const rightV6 = b.includes(':');
+  if (leftV6 !== rightV6) return leftV6 ? 1 : -1;
+
+  if (leftV6) {
+    const left = ipv6Groups(a);
+    const right = ipv6Groups(b);
+    if (left && right) {
+      for (let index = 0; index < 8; index += 1) {
+        const diff = left[index] - right[index];
+        if (diff !== 0) return diff;
+      }
+      return 0;
+    }
+    return a.localeCompare(b);
+  }
+
+  const left = ipv4Parts(a);
+  const right = ipv4Parts(b);
+  if (left && right) {
+    for (let index = 0; index < 4; index += 1) {
+      const diff = left[index] - right[index];
+      if (diff !== 0) return diff;
+    }
+    return 0;
   }
   return a.localeCompare(b);
 }
 
-export function subnetOf(ip: string): string {
+export function subnetOf(ip: string, grouping?: HostGrouping): string {
   if (ip.includes(':')) {
-    const parts = ip.split(':').filter((part) => part.length > 0);
-    return `${parts[0] ?? '0000'}:${parts[1] ?? '0000'}::/64`;
+    return ipv6PrefixOf(ip, grouping?.ipv6 ?? DEFAULT_IPV6_PREFIX);
   }
-  const octets = ip.split('.');
-  if (octets.length === 4) return `${octets[0]}.${octets[1]}.${octets[2]}.0/24`;
+  if (ipv4Parts(ip)) return ipv4PrefixOf(ip, grouping?.ipv4 ?? DEFAULT_IPV4_PREFIX);
   return 'unrouted';
 }
 
-export function groupHosts(hosts: NmapHost[]): { cidr: string; hosts: NmapHost[] }[] {
+const networkOf = (cidr: string) => cidr.slice(0, cidr.lastIndexOf('/') || undefined);
+
+export function groupHosts(
+  hosts: NmapHost[],
+  grouping?: HostGrouping,
+): { cidr: string; hosts: NmapHost[] }[] {
   const buckets = new Map<string, NmapHost[]>();
   for (const host of hosts) {
-    const cidr = subnetOf(host.ip);
+    const cidr = subnetOf(host.ip, grouping);
     const bucket = buckets.get(cidr);
     if (bucket) bucket.push(host);
     else buckets.set(cidr, [host]);
   }
   return [...buckets.entries()]
     .map(([cidr, list]) => ({ cidr, hosts: [...list].sort((a, b) => compareIp(a.ip, b.ip)) }))
-    .sort((a, b) => compareIp(a.cidr.replace('/24', '.0'), b.cidr.replace('/24', '.0')));
+    .sort((a, b) => compareIp(networkOf(a.cidr), networkOf(b.cidr)) || a.cidr.length - b.cidr.length);
 }
 
 function layoutRoute(scan: NmapScan): { hops: PlacedHop[]; bottom: number } {
@@ -83,7 +190,10 @@ function layoutRoute(scan: NmapScan): { hops: PlacedHop[]; bottom: number } {
       // nmap ends a trace at the target: that entry names the host, not a router.
       if (ip === host.ip) return;
       const depth = index + 1;
-      if ((depthByIp.get(ip) ?? 0) < depth) depthByIp.set(ip, depth);
+      // A router several traces pass through is drawn at the earliest column it
+      // appears in, which is the column its own path reaches it from.
+      const seen = depthByIp.get(ip);
+      if (seen === undefined || depth < seen) depthByIp.set(ip, depth);
     });
   }
 
@@ -108,7 +218,7 @@ function layoutRoute(scan: NmapScan): { hops: PlacedHop[]; bottom: number } {
   return { hops, bottom };
 }
 
-export function layoutScan(scan: NmapScan): ScanLayout {
+export function layoutScan(scan: NmapScan, grouping?: HostGrouping): ScanLayout {
   const route = layoutRoute(scan);
   const top = Math.max(route.bottom, ORIGIN_H) + 96;
 
@@ -117,7 +227,7 @@ export function layoutScan(scan: NmapScan): ScanLayout {
   let cursorY = top;
   let rowHeight = 0;
 
-  for (const group of groupHosts(scan.hosts)) {
+  for (const group of groupHosts(scan.hosts, grouping)) {
     const count = group.hosts.length;
     const cols = Math.min(MAX_COLS, Math.max(1, Math.ceil(Math.sqrt(count))));
     const rows = Math.ceil(count / cols);

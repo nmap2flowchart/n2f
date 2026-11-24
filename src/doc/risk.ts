@@ -357,28 +357,44 @@ export type NodeRisk = {
 
 type CompiledLevel = { level: RiskLevel; ranges: PortRange[] };
 
-const compiledCache = new WeakMap<RiskPolicy, CompiledLevel[]>();
+type CompiledPolicy = {
+  /** Enabled levels in priority order. */
+  levels: CompiledLevel[];
+  /**
+   * Port → `index + 1` of the level that claims it, `0` when no level does. Filling
+   * it backwards lets the first (highest-priority) level win, and turns every
+   * "is this port risky" question into one array read instead of a range scan.
+   */
+  byPort: Uint8Array;
+};
 
-function compiled(policy: RiskPolicy): CompiledLevel[] {
+const compiledCache = new WeakMap<RiskPolicy, CompiledPolicy>();
+
+function compiled(policy: RiskPolicy): CompiledPolicy {
   const cached = compiledCache.get(policy);
   if (cached) return cached;
-  const out = policy.levels
+  const levels = policy.levels
     .filter((level) => level.enabled)
     .map((level) => ({ level, ranges: parsePortSpec(level.ports).ranges }));
+  const byPort = new Uint8Array(MAX_PORT + 1);
+  for (let index = levels.length - 1; index >= 0; index -= 1) {
+    for (const range of levels[index].ranges) byPort.fill(index + 1, range.from, range.to + 1);
+  }
+  const out = { levels, byPort };
   compiledCache.set(policy, out);
   return out;
 }
 
 export function levelForPort(port: number, policy: RiskPolicy): RiskLevel | null {
-  for (const entry of compiled(policy)) {
-    if (portInRanges(port, entry.ranges)) return entry.level;
-  }
-  return null;
+  if (!Number.isInteger(port) || port < 1 || port > MAX_PORT) return null;
+  const { levels, byPort } = compiled(policy);
+  const match = byPort[port];
+  return match === 0 ? null : levels[match - 1].level;
 }
 
 export function nodeRisk(host: NmapHost | undefined, policy: RiskPolicy): NodeRisk | null {
   if (!host) return null;
-  const levels = compiled(policy);
+  const { levels, byPort } = compiled(policy);
   if (levels.length === 0) return null;
 
   const open = openPorts(host);
@@ -388,8 +404,9 @@ export function nodeRisk(host: NmapHost | undefined, policy: RiskPolicy): NodeRi
   const perLevel = new Map<string, number[]>();
 
   for (const port of open) {
-    const level = levelForPort(port.port, policy);
-    if (!level) continue;
+    const index = byPort[port.port];
+    if (index === 0) continue;
+    const level = levels[index - 1].level;
     badges[String(port.port)] = { label: level.label, color: level.color };
     const bucket = perLevel.get(level.id);
     if (bucket) bucket.push(port.port);
@@ -422,15 +439,16 @@ export function nodeRisk(host: NmapHost | undefined, policy: RiskPolicy): NodeRi
 /** Ports of one level for the inspector's per-level warnings. */
 export function portsByLevel(host: NmapHost | undefined, policy: RiskPolicy): { level: RiskLevel; ports: number[] }[] {
   if (!host) return [];
-  const levels = compiled(policy);
-  const open = openPorts(host);
-  const out: { level: RiskLevel; ports: number[] }[] = [];
-  for (const entry of levels) {
-    const matched = open
-      .filter((port) => portInRanges(port.port, entry.ranges))
-      .map((port) => port.port);
-    if (matched.length > 0) out.push({ level: entry.level, ports: matched });
+  const { levels, byPort } = compiled(policy);
+  const buckets = levels.map(() => [] as number[]);
+  for (const port of openPorts(host)) {
+    const index = byPort[port.port];
+    if (index > 0) buckets[index - 1].push(port.port);
   }
+  const out: { level: RiskLevel; ports: number[] }[] = [];
+  buckets.forEach((ports, index) => {
+    if (ports.length > 0) out.push({ level: levels[index].level, ports });
+  });
   return out;
 }
 
@@ -483,6 +501,8 @@ export type RiskSummaryHost = {
   hostname: string;
   /** Name of the layer the card lives on, when known. */
   layer: string;
+  /** Vulnerability ids the scan reported for this host. */
+  cves?: string[];
 };
 
 export type RiskSummaryPort = {
@@ -539,6 +559,7 @@ export function riskSummary(
       label: nodeTitle(node),
       hostname: node.host.hostnames.find((name) => name.trim()) ?? '',
       layer: layers?.get(node.layerId)?.name ?? '',
+      ...(node.host.vulns?.length ? { cves: node.host.vulns.map((vuln) => vuln.id) } : {}),
     };
     for (const port of openPorts(node.host)) {
       const level = levelForPort(port.port, policy);

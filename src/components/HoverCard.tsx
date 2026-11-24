@@ -2,6 +2,8 @@ import { NodeIcon } from '../icons/NodeIcon';
 import { nodeSubtitle, nodeTitle, type DiagramNode } from '../doc/types';
 import { hexToRgba, type NodeRisk } from '../doc/risk';
 import { discoveryOnly, openPorts, serviceLabel } from '../model/types';
+import { classifyHost, DEVICE_ROLE_LABELS } from '../model/device';
+import { vulnColor } from '../model/vulns';
 
 const MAX_PORTS = 10;
 const MAX_SCRIPTS = 3;
@@ -48,6 +50,9 @@ export function HoverCard({ node, anchor, childCount, risk }: HoverCardProps) {
   const ports = host ? openPorts(host) : [];
   const shown = ports.slice(0, MAX_PORTS);
   const scripts = host ? [...host.scripts, ...host.ports.flatMap((port) => port.scripts)] : [];
+  const profile = classifyHost(host);
+  const role = profile.role;
+  const vulns = host?.vulns ?? [];
   const notes = (node.notes ?? '').trim();
 
   return (
@@ -137,6 +142,24 @@ export function HoverCard({ node, anchor, childCount, risk }: HoverCardProps) {
                 <strong>
                   {host.os[0].name}
                   {host.os[0].accuracy ? <em> ({host.os[0].accuracy}%)</em> : null}
+                </strong>
+              </div>
+            )}
+            {role && (
+              <div>
+                <span>Role</span>
+                <strong>{DEVICE_ROLE_LABELS[role]}</strong>
+              </div>
+            )}
+            {vulns.length > 0 && (
+              <div className="is-wide">
+                <span>Findings</span>
+                <strong className="mono" style={{ color: vulnColor(vulns[0].severity) }}>
+                  {vulns
+                    .slice(0, 3)
+                    .map((vuln) => vuln.id)
+                    .join(', ')}
+                  {vulns.length > 3 ? ` +${vulns.length - 3}` : ''}
                 </strong>
               </div>
             )}

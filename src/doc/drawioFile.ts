@@ -1,6 +1,7 @@
 import { XMLParser } from 'fast-xml-parser';
 
 import { ICONS } from '../icons/registry';
+import { looksLikeDrawio } from './formatSniff';
 import type { NmapHost, NmapPort } from '../model/types';
 import { HOP_H, HOP_W, HOST_H, HOST_W, ORIGIN_H, ORIGIN_W, NOTE_H, NOTE_W } from '../graph/layout';
 import {
@@ -257,10 +258,7 @@ async function inflate(encoded: string): Promise<string | null> {
   }
 }
 
-export function looksLikeDrawio(text: string): boolean {
-  const head = text.slice(0, 8192);
-  return /<mxfile[\s>]/.test(head) || /<mxGraphModel[\s>]/.test(head);
-}
+export { looksLikeDrawio };
 
 export async function readDrawioFile(text: string, fileName: string): Promise<DrawioRead> {
   if (!looksLikeDrawio(text)) {

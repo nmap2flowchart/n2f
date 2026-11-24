@@ -5,7 +5,8 @@ import { discoveryOnly, openPorts } from '../model/types';
 import { hexToRgba } from '../doc/risk';
 import { NodeIcon } from '../icons/NodeIcon';
 import { nodeSubtitle, nodeTitle } from '../doc/types';
-import { virtualPlatformOf } from '../model/device';
+import { DEVICE_ROLE_LABELS, DEVICE_ROLE_TAGS, HIGH_VALUE_ROLES, virtualPlatformOf } from '../model/device';
+import { vulnColor } from '../model/vulns';
 
 const MAX_BADGES = 2;
 
@@ -43,6 +44,8 @@ export const HostNode = memo(function HostNode({ data, selected }: NodeProps<App
   const overflow = open.length - shown.length;
   const subtitle = nodeSubtitle(node);
   const vm = host ? virtualPlatformOf(host) : undefined;
+  const vulns = data.vulns ?? [];
+  const worst = vulns[0] ?? null;
   const osHint = host?.os[0] ? ` · ${host.os[0].name.split(' ').slice(0, 2).join(' ')}` : '';
   const meta = !host
     ? (node.notes?.split('\n')[0] ?? 'custom node')
@@ -89,6 +92,23 @@ export const HostNode = memo(function HostNode({ data, selected }: NodeProps<App
           {vm && (
             <span className="tag tag--vm" title={`Virtual machine on ${vm}`}>
               VM
+            </span>
+          )}
+          {data.role && HIGH_VALUE_ROLES.has(data.role) && (
+            <span className="tag tag--role" title={`${DEVICE_ROLE_LABELS[data.role]} · ${data.roleEvidence?.detail ?? ''}`}>
+              {DEVICE_ROLE_TAGS[data.role]}
+            </span>
+          )}
+          {worst && vulns.length > 0 && (
+            <span
+              className="tag tag--vuln"
+              title={vulns
+                .slice(0, 4)
+                .map((vuln) => `${vuln.id}${vuln.cvss !== undefined ? ` (${vuln.cvss})` : ''}`)
+                .join(' · ')}
+              style={{ borderColor: hexToRgba(vulnColor(worst.severity), 0.55), color: vulnColor(worst.severity) }}
+            >
+              CVE<b>{vulns.length}</b>
             </span>
           )}
           {risk && (
@@ -271,6 +291,17 @@ export const NoteNode = memo(function NoteNode({ data, selected }: NodeProps<App
       style={node.accent ? ({ '--node-accent': node.accent } as React.CSSProperties) : undefined}
     >
       <NodeHandles />
+      {selected && !editing && (
+        <NodeResizer
+          minWidth={data.minW}
+          minHeight={data.minH}
+          lineClassName="note-resizer__line"
+          handleClassName="note-resizer__handle"
+          onResizeEnd={(_event, params) =>
+            data.onResize?.(node.id, { w: Math.round(params.width), h: Math.round(params.height) })
+          }
+        />
+      )}
       <div className="note-node__head">
         <NodeIcon id={node.icon ?? 'iot'} size={14} />
         <span className="note-node__title">{nodeTitle(node)}</span>

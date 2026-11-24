@@ -8,7 +8,15 @@ import { ImportPreviewBody } from './ImportPreview';
 
 export type FileHubTab = 'import' | 'export';
 
-export type ExportFormat = 'design' | 'mermaid' | 'drawio' | 'svg' | 'png' | 'pdf';
+export type ExportFormat =
+  | 'design'
+  | 'mermaid'
+  | 'drawio'
+  | 'inventory-md'
+  | 'inventory-csv'
+  | 'svg'
+  | 'png'
+  | 'pdf';
 
 const FORMATS: { id: ExportFormat; glyph: FileGlyphName; label: string; hint: string }[] = [
   {
@@ -28,6 +36,18 @@ const FORMATS: { id: ExportFormat; glyph: FileGlyphName; label: string; hint: st
     glyph: 'drawio',
     label: 'draw.io diagram',
     hint: 'An editable .drawio file for diagrams.net, Nextcloud or the draw.io plugin.',
+  },
+  {
+    id: 'inventory-md',
+    glyph: 'json',
+    label: 'Inventory · Markdown',
+    hint: 'A host table for a ticket or a handover: address, names, role, open ports, risk and findings.',
+  },
+  {
+    id: 'inventory-csv',
+    glyph: 'csv',
+    label: 'Inventory · CSV',
+    hint: 'The same table as a spreadsheet – one row per host, grouped by section.',
   },
   {
     id: 'svg',
@@ -259,10 +279,10 @@ export function FileHubDialog({
               >
                 <FileGlyph name="xml" />
                 <span className="import-option__body">
-                  <strong>{importing ? 'Reading the scan…' : 'nmap scan (XML)'}</strong>
+                  <strong>{importing ? 'Reading the scan…' : 'nmap scan'}</strong>
                   <span>
-                    A file written by <code>nmap -oX</code> – a ping sweep, a port scan or a full
-                    audit. Hosts, subnets and ports become the diagram.
+                    Any nmap output: <code>-oX</code> XML, <code>-oG</code> grepable or <code>-oN</code>{' '}
+                    normal – including masscan's XML. Hosts, subnets and ports become the diagram.
                   </span>
                 </span>
                 <span className="import-option__tag">Recommended</span>
@@ -272,7 +292,7 @@ export function FileHubDialog({
                 <button type="button" className="import-option" onClick={onChooseLayers} disabled={importing}>
                   <FileGlyph name="layers" />
                   <span className="import-option__body">
-                    <strong>Add scans as new layers (XML)</strong>
+                    <strong>Add scans as new layers</strong>
                     <span>Keep the open diagram and put one or more scans beside it, each on its own layer.</span>
                   </span>
                 </button>

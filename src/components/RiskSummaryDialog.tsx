@@ -323,8 +323,7 @@ function RiskSummaryPanel(props: Omit<RiskSummaryDialogProps, 'open'> & { doc: D
             {filtered
               ? `Current view follows “${query.trim()}” · one row per flagged card and port.`
               : 'One row per flagged card and port.'}
-          </span>
-          <div className="risk-export">
+          </span>          <div className="risk-export">
             <div className="risk-export__format" role="radiogroup" aria-label="Report format">
               <button
                 type="button"

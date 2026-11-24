@@ -1,5 +1,9 @@
 import { XMLParser } from 'fast-xml-parser';
 import type { NmapHost, NmapOsMatch, NmapPort, NmapScan, NmapScript, NmapTraceHop } from '../model/types';
+import { normalizeTargets, parseTargets } from './targets';
+import { stampHosts } from './scanFormat';
+import { mergeHostList } from './mergeScanHosts';
+import { repairXml, salvageHostBlocks, type XmlRepair } from './xmlRepair';
 
 const ARRAY_PATHS = new Set([
   'nmaprun.host',
@@ -12,6 +16,7 @@ const ARRAY_PATHS = new Set([
   'nmaprun.host.os.osmatch',
   'nmaprun.host.os.osmatch.osclass',
   'nmaprun.host.trace.hop',
+  'nmaprun.target',
 ]);
 
 const parser = new XMLParser({
@@ -183,35 +188,29 @@ function collectTrace(hosts: Raw[]): NmapTraceHop[] {
   return [...byIp.values()].sort((a, b) => a.ttl - b.ttl);
 }
 
-export function parseNmapXml(xml: string, fileName = 'scan.xml'): NmapScan {
-  const cleaned = xml.replace(/<!DOCTYPE[^>[]*(\[[\s\S]*?\])?>/gi, '');
-
-  let parsed: Raw;
-  try {
-    parsed = parser.parse(cleaned) as Raw;
-  } catch (error) {
-    throw new Error(`That file is not valid XML (${(error as Error).message}).`);
+/** The attributes a salvaged file's hosts are missing, read straight off its tag. */
+function runFromHeader(header: Record<string, string>, hosts: Raw[]): Raw {
+  const run: Raw = { host: hosts };
+  for (const name of ['scanner', 'args', 'version', 'start']) {
+    if (header[name]) run[`@_${name}`] = header[name];
   }
+  return run;
+}
 
-  const run = child(parsed, 'nmaprun');
-  if (!run) {
-    throw new Error('No <nmaprun> root element. Run nmap with -oX to produce XML output.');
-  }
-
-  const hosts: NmapHost[] = [];
-  const seen = new Set<string>();
+/** Everything below the root element: hosts, host hints, traces and the run's metadata. */
+function scanFromRun(run: Raw, fileName: string): NmapScan {
+  // One card per address: masscan writes one record per open port, and nmap can
+  // repeat an address (a hosthint plus the host, two runs concatenated).
+  const records: NmapHost[] = [];
   for (const raw of asArray<Raw>(run.host)) {
-    const host = toHost(raw, hosts.length);
-    if (!host || seen.has(host.ip)) continue;
-    seen.add(host.ip);
-    hosts.push(host);
+    const host = toHost(raw, records.length);
+    if (host) records.push(host);
   }
   for (const raw of asArray<Raw>(run.hosthint)) {
-    const host = toHost(raw, hosts.length);
-    if (!host || seen.has(host.ip)) continue;
-    seen.add(host.ip);
-    hosts.push({ ...host, portsScanned: false });
+    const host = toHost(raw, records.length);
+    if (host) records.push({ ...host, portsScanned: false });
   }
+  const hosts = mergeHostList(records);
 
   const trace = collectTrace(asArray<Raw>(run.host));
 
@@ -221,15 +220,103 @@ export function parseNmapXml(xml: string, fileName = 'scan.xml'): NmapScan {
   const start = attr(run, 'start');
   const finished = child(child(run, 'runstats'), 'finished');
   const elapsed = attr(finished, 'elapsed');
+  const args = attr(run, 'args');
+  const startedAt = start ? new Date(Number(start) * 1000).toISOString() : undefined;
+
+  // What nmap says it was pointed at: the skipped-target elements plus the
+  // command line, which is where `-oX` output actually records it.
+  const declaredTargets = asArray<Raw>(run.target)
+    .map((target) => attr(target, 'specification'))
+    .filter((target): target is string => Boolean(target));
+  const targets = normalizeTargets([...declaredTargets, ...parseTargets(args)]);
+
+  // Every host and port remembers when it was last seen, which is what makes a
+  // merge able to say "this port is no longer open" instead of dropping it, and
+  // the findings its scripts reported travel with it.
+  const stamped = stampHosts(hosts, fileName, startedAt);
 
   return {
     fileName,
-    args: attr(run, 'args'),
+    args,
     version: attr(run, 'version'),
-    startedAt: start ? new Date(Number(start) * 1000).toISOString() : undefined,
+    ...(attr(run, 'scanner') ? { scanner: attr(run, 'scanner') } : {}),
+    ...(targets.length > 0 ? { targets } : {}),
+    startedAt,
     elapsedSeconds: elapsed ? Number(elapsed) : undefined,
     summary: attr(finished, 'summary'),
-    hosts,
+    hosts: stamped,
     trace: trace.length > 0 ? trace : undefined,
   };
+}
+
+export function parseNmapXml(xml: string, fileName = 'scan.xml'): NmapScan {
+  const cleaned = xml.replace(/<!DOCTYPE[^>[]*(\[[\s\S]*?\])?>/gi, '');
+  const repair = repairXml(cleaned);
+  const damaged = repair.problem !== undefined || repair.repairs.length > 0;
+
+  let parsed: Raw | undefined;
+  try {
+    // Nmap's reader is lenient: it usually builds a tree even from text that does
+    // not validate, which is the second-best outcome after a clean repair.
+    parsed = parser.parse(repair.text) as Raw;
+  } catch {
+    parsed = undefined;
+  }
+
+  const run = parsed ? (child(parsed, 'nmaprun') ?? (typeof parsed.nmaprun === 'string' ? {} : undefined)) : undefined;
+  if (run) {
+    const scan = scanFromRun(run, fileName);
+    if (!damaged) return scan;
+    return { ...scan, recovered: true, warnings: [recoveryWarning(repair)] };
+  }
+
+  // Nothing usable as a tree. Nmap cannot nest hosts, so each <host> block can be
+  // read on its own: whatever the scan wrote before it was cut off is still there.
+  const salvage = salvageHostBlocks(cleaned);
+  const rawHosts: Raw[] = [];
+  let dropped = salvage.dropped;
+  for (const block of salvage.blocks) {
+    try {
+      const holder = parser.parse(`<nmaprun>${block}</nmaprun>`) as Raw;
+      const read = asArray<Raw>(child(holder, 'nmaprun')?.host);
+      if (read.length === 0) dropped += 1;
+      rawHosts.push(...read);
+    } catch {
+      dropped += 1;
+    }
+  }
+
+  const brokenFile = () =>
+    new Error(
+      // Well-formed XML that is simply not nmap gets the actionable message; anything
+      // else (empty, binary, a text file) is not XML at all.
+      repair.clean
+        ? 'No <nmaprun> root element. Run nmap with -oX to produce XML output.'
+        : `That file is not valid XML (${repair.problem ?? 'the structure could not be read'}).`,
+    );
+
+  if (rawHosts.length === 0) throw brokenFile();
+
+  const scan = scanFromRun(runFromHeader(salvage.header, rawHosts), fileName);
+  // XML that merely contains something called <host> is not a scan.
+  if (scan.hosts.length === 0) throw brokenFile();
+
+  return {
+    ...scan,
+    recovered: true,
+    warnings: [
+      `${recoveryWarning(repair)} Only the ${rawHosts.length} host block${
+        rawHosts.length === 1 ? '' : 's'
+      } that could still be read ${rawHosts.length === 1 ? 'is' : 'are'} shown${
+        dropped > 0 ? `, and ${dropped} unusable block${dropped === 1 ? ' was' : 's were'} skipped` : ''
+      } – port counts and traces may be incomplete.`,
+    ],
+  };
+}
+
+/** One sentence the import preview can show before a damaged file is committed. */
+function recoveryWarning(repair: XmlRepair): string {
+  const problem = repair.problem ?? 'the XML tree could not be built';
+  const applied = repair.repairs.length > 0 ? ` – ${repair.repairs.join(', ')}` : ' – read as far as it goes';
+  return `The file is not well-formed XML (${problem})${applied}. Check the diagram against the scan.`;
 }

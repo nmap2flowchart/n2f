@@ -24,6 +24,8 @@ export type RiskReportRow = {
   host: string;
   hostname: string;
   layer: string;
+  /** Findings the host's scripts reported, space-separated. */
+  cve: string;
 };
 
 /** One row per flagged card/port pair – the shape both formats are built from. */
@@ -41,6 +43,7 @@ export function riskReportRows(summary: RiskSummary): RiskReportRow[] {
           host: host.label,
           hostname: host.hostname,
           layer: host.layer,
+          cve: (host.cves ?? []).join(' '),
         });
       }
     }
@@ -49,9 +52,9 @@ export function riskReportRows(summary: RiskSummary): RiskReportRow[] {
 }
 
 export function toRiskCsv(summary: RiskSummary, meta: RiskReportMeta): string {
-  const header = ['level', 'priority', 'color', 'port', 'service', 'host', 'hostname', 'layer'];
+  const header = ['level', 'priority', 'color', 'port', 'service', 'host', 'hostname', 'layer', 'cve'];
   const lines = riskReportRows(summary).map((row) =>
-    [row.level, row.priority, row.color, row.port, row.service, row.host, row.hostname, row.layer]
+    [row.level, row.priority, row.color, row.port, row.service, row.host, row.hostname, row.layer, row.cve]
       .map(csvCell)
       .join(','),
   );

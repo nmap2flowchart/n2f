@@ -1,6 +1,7 @@
 import type { ImportEffect, ImportMode } from '../doc/docFromScan';
 import type { ImportPreview } from '../hooks/useImportFlow';
 import { openPorts, discoveryOnly, type NmapScan } from '../model/types';
+import { groupHosts, type HostGrouping } from '../graph/layout';
 
 export const IMPORT_MODE_HINTS: Record<ImportMode, { label: string; hint: string }> = {
   merge: { label: 'Merge', hint: 'Refresh matching hosts, add new ones, keep the rest' },
@@ -8,13 +9,17 @@ export const IMPORT_MODE_HINTS: Record<ImportMode, { label: string; hint: string
   layer: { label: 'New layer', hint: 'Add this scan beside the current diagram' },
 };
 
-function subnetCount(scan: NmapScan) {
-  const subnets = new Set<string>();
-  scan.hosts.forEach((host) => {
-    const match = /^(\d{1,3}\.){3}\d{1,3}$/.exec(host.ip);
-    if (match) subnets.add(host.ip.split('.').slice(0, 3).join('.') + '.0/24');
-  });
-  return subnets.size;
+/** The prefixes the grouping control offers, plus the scan's own suggestion. */
+const GROUPING_OPTIONS = [16, 20, 22, 24, 25, 26, 28];
+
+const FORMAT_LABELS: Record<string, string> = {
+  xml: 'nmap XML (-oX)',
+  grepable: 'nmap grepable (-oG)',
+  normal: 'nmap normal (-oN)',
+};
+
+function subnetCount(scan: NmapScan, grouping?: HostGrouping) {
+  return groupHosts(scan.hosts.filter((host) => !host.ip.includes(':')), grouping).length;
 }
 
 /**
@@ -27,6 +32,7 @@ export function ImportPreviewBody({
   effect,
   hasDiagram,
   onChooseMode,
+  onChooseGrouping,
   onConfirm,
   onCancel,
   cancelLabel = 'Cancel',
@@ -35,11 +41,13 @@ export function ImportPreviewBody({
   effect: ImportEffect | null;
   hasDiagram: boolean;
   onChooseMode: (mode: ImportMode) => void;
+  onChooseGrouping?: (grouping: HostGrouping | undefined) => void;
   onConfirm: () => void;
   onCancel: () => void;
   cancelLabel?: string;
 }) {
   const scan = preview.scan;
+  const grouping = preview.grouping?.ipv4;
   const confirmLabel = !hasDiagram
     ? 'Import scan'
     : preview.mode === 'replace'
@@ -56,7 +64,7 @@ export function ImportPreviewBody({
           <span>hosts</span>
         </div>
         <div>
-          <strong>{subnetCount(scan)}</strong>
+          <strong>{subnetCount(scan, preview.grouping)}</strong>
           <span>subnets</span>
         </div>
         <div>
@@ -96,7 +104,9 @@ export function ImportPreviewBody({
             ? `${effect.nodes} nodes · read in this browser, nothing uploaded`
             : preview.mode === 'merge'
               ? `${effect.added} new node${effect.added === 1 ? '' : 's'} · ${effect.matched} refreshed${
-                  effect.stale > 0 ? ` · ${effect.stale} kept as stale` : ''
+                  effect.updated > 0 ? ` (${effect.updated} changed)` : ''
+                }${effect.stale > 0 ? ` · ${effect.stale} kept as stale` : ''}${
+                  effect.closedPorts > 0 ? ` · ${effect.closedPorts} port no longer open` : ''
                 }`
               : preview.mode === 'layer'
                 ? `${effect.nodes} nodes on a new layer · the current diagram is untouched`
@@ -104,7 +114,44 @@ export function ImportPreviewBody({
         </p>
       )}
 
+      {preview.warnings.length > 0 && (
+        <ul className="import-preview__warnings">
+          {preview.warnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      )}
+
+      {onChooseGrouping && (
+        <label className="import-preview__grouping">
+          <span>Group hosts by</span>
+          <select
+            value={grouping === undefined ? 'auto' : String(grouping)}
+            onChange={(event) => {
+              const value = event.target.value;
+              onChooseGrouping(value === 'auto' ? undefined : { ipv4: Number(value) });
+            }}
+          >
+            <option value="auto">
+              Auto{preview.grouping?.ipv4 ? ` (/${preview.grouping.ipv4})` : ' (/24)'}
+            </option>
+            {GROUPING_OPTIONS.map((prefix) => (
+              <option key={prefix} value={prefix}>
+                /{prefix}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
       <dl className="import-preview__metadata">
+        <div>
+          <dt>Format</dt>
+          <dd>
+            {FORMAT_LABELS[preview.format] ?? preview.format}
+            {scan.recovered ? <span className="import-preview__recovered"> · partially recovered</span> : null}
+          </dd>
+        </div>
         <div>
           <dt>Command</dt>
           <dd>{scan.args || 'Not reported'}</dd>

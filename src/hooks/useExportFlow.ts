@@ -1,10 +1,11 @@
 import { useCallback, useMemo } from 'react';
 
-import type { DiagramDoc } from '../doc/types';
+import type { DiagramDesign, DiagramDoc } from '../doc/types';
 import { isLayerVisible, layerMap } from '../doc/types';
 import { DESIGN_EXTENSION, buildDesignFile } from '../doc/designFile';
 import { RISK_SCOPE_LABEL, type RiskPolicy, type RiskScope, type RiskSummary } from '../doc/risk';
 import { toDrawio } from '../export/drawio';
+import { toInventoryCsv, toInventoryMarkdown, type InventoryMeta } from '../export/inventory';
 import { toMermaid } from '../export/mermaid';
 import { rasterize, svgToPdf, toBlob } from '../export/raster';
 import {
@@ -29,12 +30,15 @@ export function useExportFlow({
   riskPolicy,
   riskScope,
   query,
+  design,
   notify,
 }: {
   doc: DiagramDoc | null;
   riskPolicy: RiskPolicy;
   riskScope: RiskScope;
   query: string;
+  /** The canvas design the user is looking at; the picture exports follow it. */
+  design: DiagramDesign;
   notify: (message: string) => void;
 }) {
   const focusName = doc?.focusedLayerId ? layerMap(doc.layers).get(doc.focusedLayerId)?.name : null;
@@ -68,34 +72,34 @@ export function useExportFlow({
 
   const exportSvgFile = useCallback(() => {
     if (!doc) return;
-    const { svg } = toSvg(doc, riskPolicy);
+    const { svg } = toSvg(doc, riskPolicy, 'light', design);
     download(`${baseName(doc.fileName)}.svg`, svg, 'image/svg+xml');
     notify('Vector SVG exported');
-  }, [doc, notify, riskPolicy]);
+  }, [design, doc, notify, riskPolicy]);
 
   const exportPngFile = useCallback(async () => {
     if (!doc) return;
     try {
-      const { svg, width, height } = toSvg(doc, riskPolicy);
+      const { svg, width, height } = toSvg(doc, riskPolicy, 'light', design);
       const raster = await rasterize(svg, width, height, EXPORT_DPI);
       downloadBlob(`${baseName(doc.fileName)}.png`, await toBlob(raster.canvas, 'image/png'));
       notify(`PNG exported · ${raster.width}×${raster.height} px (${Math.round(raster.scale * 96)} dpi)`);
     } catch (error) {
       notify(`PNG export failed: ${(error as Error).message}`);
     }
-  }, [doc, notify, riskPolicy]);
+  }, [design, doc, notify, riskPolicy]);
 
   const exportPdfFile = useCallback(async () => {
     if (!doc) return;
     try {
-      const { svg, width, height } = toSvg(doc, riskPolicy);
+      const { svg, width, height } = toSvg(doc, riskPolicy, 'light', design);
       const pdf = await svgToPdf(svg, width, height, EXPORT_DPI);
       downloadBlob(`${baseName(doc.fileName)}.pdf`, pdf);
       notify(`PDF exported · ${Math.round((width * 72) / 96)}×${Math.round((height * 72) / 96)} pt page`);
     } catch (error) {
       notify(`PDF export failed: ${(error as Error).message}`);
     }
-  }, [doc, notify, riskPolicy]);
+  }, [design, doc, notify, riskPolicy]);
 
   /**
    * The design file is the whole document, never the canvas scope: opening it
@@ -112,8 +116,40 @@ export function useExportFlow({
     );
   }, [doc, notify, riskPolicy, riskScope]);
 
-  const exportRiskReport = useCallback(
-    (format: 'csv' | 'json', summary: RiskSummary, scope: RiskReportScope, scopeNote: string) => {
+  /**
+   * The inventory follows the canvas scope, like the picture formats: a focused
+   * layer or hidden nodes are what the reader asked to look at.
+   */
+  const inventoryMeta = useCallback(
+    (): InventoryMeta | null =>
+      doc
+        ? {
+            diagram: doc.fileName,
+            scopeLabel: exportScope.replace(/^Export scope: /, ''),
+            policyScope: riskScope,
+            generated: new Date().toISOString(),
+          }
+        : null,
+    [doc, exportScope, riskScope],
+  );
+
+  const exportInventoryMarkdown = useCallback(() => {
+    if (!doc) return;
+    const meta = inventoryMeta();
+    if (!meta) return;
+    download(`${baseName(doc.fileName)}.inventory.md`, toInventoryMarkdown(doc, riskPolicy, meta), 'text/markdown');
+    notify('Host inventory exported as Markdown');
+  }, [doc, inventoryMeta, notify, riskPolicy]);
+
+  const exportInventoryCsv = useCallback(() => {
+    if (!doc) return;
+    const meta = inventoryMeta();
+    if (!meta) return;
+    download(`${baseName(doc.fileName)}.inventory.csv`, toInventoryCsv(doc, riskPolicy, meta), 'text/csv');
+    notify('Host inventory exported as CSV');
+  }, [doc, inventoryMeta, notify, riskPolicy]);
+
+  const exportRiskReport = useCallback(    (format: 'csv' | 'json', summary: RiskSummary, scope: RiskReportScope, scopeNote: string) => {
       if (!doc) return;
       const meta: RiskReportMeta = {
         diagram: doc.fileName,
@@ -145,6 +181,8 @@ export function useExportFlow({
     exportRiskReport,
     exportMermaid,
     exportDrawio,
+    exportInventoryMarkdown,
+    exportInventoryCsv,
     exportSvgFile,
     exportPngFile,
     exportPdfFile,

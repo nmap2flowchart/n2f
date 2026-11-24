@@ -11,6 +11,13 @@ export type Layer = {
 
 export type NodeKind = 'host' | 'section' | 'note' | 'hop' | 'origin';
 
+/**
+ * How much detail the picture carries. A browser preference rather than diagram
+ * state – the same diagram is shown in either design – but the picture exports
+ * follow it, because that is what a user who asked for a plain diagram prints.
+ */
+export type DiagramDesign = 'detailed' | 'basic';
+
 export type DiagramNode = {
   id: string;
   kind: NodeKind;
@@ -110,6 +117,13 @@ export type DiagramDoc = {
   version: 2;
   fileName: string;
   args?: string;
+  /** Where the scan that built this diagram was pointed. */
+  targets?: string[];
+  /**
+   * How hosts are grouped into section frames. Absent means the importer's
+   * suggestion (the scan's own range, else /24 for IPv4 and /64 for IPv6).
+   */
+  grouping?: { ipv4?: number; ipv6?: number };
   layers: Layer[];
   nodes: DiagramNode[];
   edges: DiagramEdge[];
@@ -124,6 +138,17 @@ export type DiagramDoc = {
 
 export const MAIN_LAYER = 'layer:main';
 export const NOTES_LAYER = 'layer:notes';
+
+/**
+ * The id a section frame gets for an address group. Stable across imports and
+ * regroups, so a frame keeps its identity (and its edges' endpoints) when the
+ * grouping changes.
+ */
+export function nodeIdFor(kind: string, value: string): string {
+  return `${kind}:${value.replace(/[^0-9a-zA-Z./:]+/g, '_')}`;
+}
+
+export const sectionNodeId = (cidr: string) => nodeIdFor('section', cidr);
 
 export const LAYER_COLORS = ['#4b9fff', '#2fd6a5', '#f0a25c', '#c084fc', '#f472b6', '#facc15', '#94a3b8'];
 
